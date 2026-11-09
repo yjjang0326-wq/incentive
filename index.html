@@ -140,6 +140,23 @@ table.bridge{max-width:680px}
 .pct-in{display:flex;align-items:center;gap:6px}
 .pct-in input{min-width:80px!important;max-width:110px}
 .pct-in span{color:var(--ink-2)}
+.team-toggle{all:unset;cursor:pointer;display:flex;gap:8px;align-items:flex-start;border-radius:6px;padding:2px 4px;margin:-2px -4px}
+.team-toggle:hover .team-name{color:var(--accent)}
+.team-toggle:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent)}
+.team-toggle .chev{color:var(--accent);font-size:12px;margin-top:3px;width:10px}
+.team-toggle .team-meta{display:block}
+tr.plan-open td{background:var(--accent-soft)}
+tr.plan-row > td{background:var(--sunk)!important;padding:14px;white-space:normal}
+.plan-wrap{display:flex;flex-direction:column;gap:14px}
+.plan-summary{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;font-size:14px;padding:10px 14px;background:var(--surface);border:1px solid var(--accent-line);border-radius:10px}
+.plan-result{color:var(--accent)}
+.plan-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+@media (max-width:900px){.plan-grid{grid-template-columns:minmax(0,1fr)}}
+.plan-block{display:flex;flex-direction:column;gap:8px;min-width:0;background:var(--surface);border:1px solid var(--line-soft);border-radius:10px;padding:12px}
+.plan-head{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
+.plan-tbl input.cell{min-width:90px}
+.plan-tbl input.cell.name{min-width:120px}
+.plan-actions{display:flex;gap:8px;flex-wrap:wrap}
 .chart-wrap{overflow-x:auto;border:1px solid var(--line-soft);border-radius:10px;padding:10px 8px 2px;background:var(--surface)}
 .legend{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--ink-2)}
 .legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
@@ -401,6 +418,71 @@ function rateCell(rate, inverse){ return `<div class="rate"><span class="num">${
 function input(id, val, opts={}){
   return `<input type="text" inputmode="numeric" class="cell ${opts.cls||""}" id="${id}" data-k="${opts.key||""}" value="${esc(fmtInput(val))}" ${opts.disabled?"disabled":""} aria-label="${esc(opts.label||"")}" placeholder="${esc(opts.ph||"")}">`;
 }
+/* ---------- 팀별 지출 계획 (변동비·고정비) ---------- */
+const openPlan = {};
+const PLAN_DEFAULTS = {
+  var: ["외주비","발행비(블로그·프리랜서)","원고비","광고선전비","지급수수료"],
+  fix: ["인건비","4대보험(회사분)","퇴직연금","복리후생비","공동경비 배분(임차료 등)"]
+};
+function planCalc(tg){
+  const p=tg.plan; if(!p) return null;
+  const rev=Number(tg.rev)||0;
+  const v=(p.var||[]).map(x=>({...x, amt: x.rate!=null ? rev*x.rate/100 : null}));
+  const f=(p.fix||[]).map(x=>({...x, rate: rev && x.amt!=null ? x.amt/rev*100 : null}));
+  const vs=v.reduce((s,x)=>s+(x.amt||0),0), fs=f.reduce((s,x)=>s+(Number(x.amt)||0),0);
+  const vr=v.reduce((s,x)=>s+(Number(x.rate)||0),0);
+  const active = v.some(x=>x.rate) || f.some(x=>x.amt);
+  return {v,f,vs,fs,vr, fr: rev? fs/rev*100 : null, profit: rev-vs-fs, margin: rev? (rev-vs-fs)/rev*100 : null, active, rev};
+}
+function applyPlan(tg){
+  const c=planCalc(tg);
+  if(c && c.active){ tg.profit=Math.round(c.profit); delete tg.margin; }
+}
+const pctTxt = v => v==null||!isFinite(v) ? "–" : (Math.round(v*100)/100)+"%";
+function planRow(t, tg, dis){
+  const c=planCalc(tg) || {v:[],f:[],vs:0,fs:0,vr:0,fr:null,profit:(tg.rev||0),margin:tg.rev?100:null,active:false,rev:tg.rev||0};
+  const noRev=!(tg.rev>0);
+  const line=(kind,x,i)=>{
+    const base=`pl|${t.id}|${kind}|${i}`;
+    const nameIn=`<input type="text" class="cell name" id="pn-${t.id}-${kind}-${i}" data-k="${base}|name" value="${esc(x.name||"")}" ${dis?"disabled":""} aria-label="항목명" placeholder="항목명">`;
+    const amtIn=`<input type="text" inputmode="numeric" class="cell" id="pa-${t.id}-${kind}-${i}" data-k="${base}|amt" value="${x.amt==null?"":esc(fmtInput(Math.round(x.amt)))}" ${dis||(kind==="var"&&noRev)?"disabled":""} aria-label="${esc(x.name||"항목")} 금액" placeholder="${kind==="var"&&noRev?"매출 먼저":"0"}">`;
+    const rateCellH = kind==="var"
+      ? `<div class="pct-in"><input type="text" inputmode="decimal" class="cell" id="pr-${t.id}-${kind}-${i}" data-k="${base}|rate" value="${x.rate==null?"":esc(String(Math.round(x.rate*100)/100))}" ${dis?"disabled":""} aria-label="${esc(x.name||"항목")} 매출 대비 %" placeholder="0"><span>%</span></div>`
+      : `<span class="num">${pctTxt(x.rate)}</span>`;
+    return `<tr><td>${nameIn}</td><td>${amtIn}</td><td>${rateCellH}</td><td>${dis?"":`<button class="ghost small" data-act="plan-del" data-t="${t.id}" data-kind="${kind}" data-i="${i}" aria-label="항목 삭제">삭제</button>`}</td></tr>`;
+  };
+  const block=(kind,title,hint,items,sum,rate)=>`<div class="plan-block">
+    <div class="plan-head"><h3>${title}</h3><span class="small muted">${hint}</span></div>
+    <div class="tbl-wrap"><table class="plan-tbl"><thead><tr><th class="l">항목</th><th>금액(원)</th><th>매출 대비</th><th></th></tr></thead><tbody>
+    ${items.map((x,i)=>line(kind,x,i)).join("") || `<tr><td colspan="4" class="muted small">항목이 없습니다.</td></tr>`}
+    <tr class="sub"><td><b>${title} 합계</b></td><td class="num"><b>${nf.format(Math.round(sum))}</b></td><td class="num"><b>${pctTxt(rate)}</b></td><td></td></tr>
+    </tbody></table></div>
+    ${dis?"":`<div><button class="ghost small" data-act="plan-add" data-t="${t.id}" data-kind="${kind}">+ ${title} 항목 추가</button></div>`}
+  </div>`;
+  return `<tr class="plan-row"><td colspan="5"><div class="plan-wrap">
+    <div class="plan-summary">
+      <span>목표 매출 <b class="num">${nf.format(c.rev)}</b></span>
+      <span>− 변동비 <b class="num">${nf.format(Math.round(c.vs))}</b> <span class="muted">(${pctTxt(c.vr)})</span></span>
+      <span>− 고정비 <b class="num">${nf.format(Math.round(c.fs))}</b> <span class="muted">(${pctTxt(c.fr)})</span></span>
+      <span class="plan-result">= 목표 영업이익 <b class="num">${nf.format(Math.round(c.profit))}</b> · 목표 이익률 <b>${pctTxt(c.margin)}</b></span>
+    </div>
+    ${noRev?`<div class="notice warn"><span>목표 매출을 먼저 입력해야 변동비 금액과 비율이 계산됩니다.</span></div>`:""}
+    <div class="plan-grid">
+      ${block("var","변동비","매출에 비례 · %를 넣으면 매출이 바뀌어도 비율 유지",c.v,c.vs,c.vr)}
+      ${block("fix","고정비","매출과 무관한 금액",c.f,c.fs,c.fr)}
+    </div>
+    ${dis?"":`<div class="plan-actions">${(tg.plan&&((tg.plan.var||[]).length||(tg.plan.fix||[]).length))?"":`<button data-act="plan-defaults" data-t="${t.id}">기본 항목 넣기</button>`}${tg.plan?`<button class="ghost danger" data-act="plan-clear" data-t="${t.id}">지출 계획 지우기</button>`:""}</div>`}
+  </div></td></tr>`;
+}
+
+function refreshPlanNumbers(tid){
+  const p=cur(); if(!p) return; const tg=(p.targets||{})[tid]||{}; const c=planCalc(tg); if(!c) return;
+  const pf=document.getElementById("tg-pf-"+tid); if(pf) pf.value=fmtInput(tg.profit);
+  const mg=document.getElementById("tg-mg-"+tid); if(mg) mg.value = c.margin==null?"":String(Math.round(c.margin*10)/10);
+  c.v.forEach((x,i)=>{ const a=document.getElementById(`pa-${tid}-var-${i}`), r=document.getElementById(`pr-${tid}-var-${i}`);
+    if(a && document.activeElement!==a) a.value = x.amt==null?"":fmtInput(Math.round(x.amt));
+    if(r && document.activeElement!==r) r.value = x.rate==null?"":String(Math.round(x.rate*100)/100); });
+}
 function marginOf(tg){ if(tg.margin!=null) return tg.margin; return tg.rev? Math.round((tg.profit||0)/tg.rev*1000)/10 : null; }
 function marginInput(t, tg, dis){
   const m = marginOf(tg);
@@ -532,14 +614,15 @@ function planView(){
   </div>`;
 
   // team targets
-  h+=`<section class="panel"><div class="panel-head"><h2>성과급 대상 팀 목표</h2><span class="small muted">단위: 원 · 이익률을 넣으면 목표 팀 영업이익이 자동 계산됩니다 · 팀 영업이익은 공동경비(임차료 등) 배분 후 금액</span></div>
+  h+=`<section class="panel"><div class="panel-head"><h2>성과급 대상 팀 목표</h2><span class="small muted">단위: 원 · 팀 이름을 누르면 변동비·고정비 지출 계획을 넣을 수 있습니다 · 팀 영업이익은 공동경비(임차료 등) 배분 후 금액</span></div>
   <div class="tbl-wrap"><table><thead><tr><th class="l">팀</th><th>목표 매출</th><th>목표 이익률</th><th>목표 팀 영업이익</th><th>인원</th></tr></thead><tbody>`;
-  teams.forEach(t=>{ const tg=T[t.id]||{};
-    h+=`<tr><td><div class="team-name">${esc(t.name)}</div><div class="team-meta">${t.members.map(m=>esc(m.name)).join(" · ")}</div></td>
+  teams.forEach(t=>{ const tg=T[t.id]||{}; const pc=planCalc(tg); const planOn=!!(pc&&pc.active); const open=!!openPlan[t.id];
+    h+=`<tr class="${open?"plan-open":""}"><td><button class="team-toggle" data-act="plan-toggle" data-t="${t.id}" aria-expanded="${open}"><span class="chev">${open?"▾":"▸"}</span><span><span class="team-name">${esc(t.name)}</span><span class="team-meta">${planOn?"지출 계획 기준":"상세 지출 계획"} · ${t.members.length}명</span></span></button></td>
       <td>${input("tg-rev-"+t.id, tg.rev, {disabled:dis,key:`t|${t.id}|rev`,label:t.name+" 목표 매출",ph:"0"})}</td>
-      <td>${marginInput(t, tg, dis)}</td>
-      <td>${input("tg-pf-"+t.id, tg.profit, {disabled:dis,key:`t|${t.id}|profit`,label:t.name+" 목표 영업이익",ph:"0"})}</td>
-      <td class="num">${t.members.length}명</td></tr>`; });
+      <td>${marginInput(t, tg, dis||planOn)}</td>
+      <td>${input("tg-pf-"+t.id, tg.profit, {disabled:dis||planOn,key:`t|${t.id}|profit`,label:t.name+" 목표 영업이익",ph:"0"})}</td>
+      <td class="num">${t.members.length}명</td></tr>`;
+    if(open) h+=planRow(t, tg, dis); });
   h+=`<tr class="total"><td>합계</td><td class="num">${nf.format(base.tgRev)}</td><td class="num">${base.tgRev?pct(base.tgTeamP/base.tgRev*100):"–"}</td><td class="num">${nf.format(base.tgTeamP)}</td><td class="num">${teams.reduce((s,t)=>s+t.members.length,0)}명</td></tr></tbody></table></div></section>`;
 
   // overhead budgets
@@ -1029,6 +1112,18 @@ document.addEventListener("input", e=>{
     const [kind,id,field]=el.dataset.k.split("|");
     const v=parseNum(el.value);
     const draft = p && p.status!=="confirmed", conf = p && p.status==="confirmed";
+    if(kind==="pl" && draft){
+      const [, tid, pk, idx, pf] = el.dataset.k.split("|");
+      p.targets=p.targets||{}; const tg=p.targets[tid]=p.targets[tid]||{};
+      tg.plan=tg.plan||{var:[],fix:[]}; const it=tg.plan[pk][+idx]; if(!it) return;
+      if(pf==="name"){ it.name=el.value; queueSave(currentId); return; }
+      if(pf==="rate"){ it.rate=v; applyPlan(tg); queueSave(currentId); refreshPlanNumbers(tid); return; }
+      if(pf==="amt"){
+        if(pk==="var"){ it.rate = (v!=null && tg.rev>0) ? v/tg.rev*100 : null; }
+        else it.amt=v;
+        applyPlan(tg); queueSave(currentId); refreshPlanNumbers(tid); return;
+      }
+    }
     if(kind==="t" && draft){ p.targets=p.targets||{}; const tg=p.targets[id]=p.targets[id]||{};
       if(field==="margin"){
         if(v==null) delete tg.margin; else { tg.margin=v; if(tg.rev!=null) tg.profit=Math.round(tg.rev*v/100); }
@@ -1038,6 +1133,7 @@ document.addEventListener("input", e=>{
       }
       tg[field]=v;
       if(field==="rev" && tg.margin!=null && v!=null) tg.profit=Math.round(v*tg.margin/100);
+      if(field==="rev") applyPlan(tg);
       if(field==="profit") delete tg.margin;
       queueSave(currentId); }
     if(kind==="c" && draft){ p.costs=p.costs||{}; if(v==null) delete p.costs[id]; else p.costs[id]=v; queueSave(currentId); }
@@ -1054,10 +1150,10 @@ document.addEventListener("input", e=>{
   if(el.dataset.oh){ const [i,f]=el.dataset.oh.split("|"); config.overheads[+i][f]=el.value; queueSave("config"); return; }
   if(el.dataset.mem){ const [ti,mi,f]=el.dataset.mem.split("|"); config.teams[+ti].members[+mi][f]= f==="share"? (parseNum(el.value)??0) : el.value; queueSave("config"); if(f==="share") render(); return; }
 });
-document.addEventListener("focusout", e=>{ const el=e.target; if(!el.dataset) return; if(el.dataset.k && !/\|margin$/.test(el.dataset.k)){ el.value=fmtInput(parseNum(el.value)); } if(el.dataset.team||el.dataset.mem||el.dataset.oh) render(); });
+document.addEventListener("focusout", e=>{ const el=e.target; if(!el.dataset) return; if(el.dataset.k && !/\|(margin|rate|name)$/.test(el.dataset.k)){ el.value=fmtInput(parseNum(el.value)); } if(el.dataset.team||el.dataset.mem||el.dataset.oh) render(); });
 document.addEventListener("change", e=>{
   const el=e.target;
-  if(el.dataset && /^t\|.*\|margin$/.test(el.dataset.k||"")){ render(); return; }
+  if(el.dataset && (/^t\|.*\|margin$/.test(el.dataset.k||"") || /^pl\|/.test(el.dataset.k||""))){ render(); return; }
   if(el.id==="psel"){ currentId=el.value; pendingConfirm=null; render(); }
   if(el.id==="ysel"){ yearSel=+el.value; render(); }
   if(el.id==="np-type"){ const n=document.getElementById("np-n"); const t=el.value;
@@ -1068,6 +1164,7 @@ document.addEventListener("click", e=>{
   const b=e.target.closest("[data-act]"); if(!b) return;
   const act=b.dataset.act; const p=cur();
   if(act==="toggle-new"){ showNew=!showNew; render(); return; }
+  if(act==="plan-toggle"){ const id=b.dataset.t; openPlan[id]=!openPlan[id]; render(); return; }
   if(act==="toggle-export"){ showExport=!showExport; exportMsg=""; showNew=false; render(); return; }
   if(act==="export-one"){ exportXlsx("one"); return; }
   if(act==="export-all"){ exportXlsx("all"); return; }
@@ -1084,6 +1181,14 @@ document.addEventListener("click", e=>{
     const {id,doc}=makePeriod(t,y,n);
     if(!periods[id]){ periods[id]=doc; queueSave(id); }
     currentId=id; showNew=false; tab="plan"; location.hash="plan"; render(); return;
+  }
+  if(act.startsWith("plan-") && p && p.status!=="confirmed"){
+    const tid=b.dataset.t; p.targets=p.targets||{}; const tg=p.targets[tid]=p.targets[tid]||{};
+    if(act==="plan-add"){ tg.plan=tg.plan||{var:[],fix:[]}; tg.plan[b.dataset.kind].push(b.dataset.kind==="var"?{name:"",rate:null}:{name:"",amt:null}); }
+    if(act==="plan-del"){ tg.plan[b.dataset.kind].splice(+b.dataset.i,1); applyPlan(tg); }
+    if(act==="plan-defaults"){ tg.plan={var:PLAN_DEFAULTS.var.map(n=>({name:n,rate:null})), fix:PLAN_DEFAULTS.fix.map(n=>({name:n,amt:null}))}; }
+    if(act==="plan-clear"){ delete tg.plan; }
+    queueSave(currentId); render(); return;
   }
   if(act==="ask-confirm"){ pendingConfirm="confirm"; render(); return; }
   if(act==="ask-unlock"){ pendingConfirm="unlock"; render(); return; }
