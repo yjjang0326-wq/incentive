@@ -216,7 +216,7 @@ tr.bsum td{font-weight:700;background:var(--accent-soft)!important}
   <nav class="tabs" id="tabs" aria-label="화면 선택"></nav>
   <div id="notice"></div>
   <main id="view" style="display:flex;flex-direction:column;gap:20px"><div class="panel"><p class="muted">불러오는 중…</p></div></main>
-  <div class="foot"><span id="savestate" class="saving"></span><span>금액은 모두 원 단위입니다. TF팀·경영총괄팀은 성과급 대상이 아니며 비용만 전사 영업이익에서 뺍니다. </span></div>
+  <div class="foot"><span id="savestate" class="saving"></span><span>금액은 모두 원 단위입니다. 공통비 부서(경영총괄팀·영업팀·대표이사및임원 등)는 성과급 대상이 아니며 비용만 전사 영업이익에서 뺍니다. </span></div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -307,7 +307,7 @@ function calc(rule, target, actual){
   return out;
 }
 /* 전사 계산: 팀 영업이익 합계 − 공통비 = 전사 영업이익 → 전사 지급 조건·상한 적용 */
-function calcCompany(rule, teams, ohs, T, A, C, CA, OR){
+function calcCompany(rule, teams, ohs, T, A, C, CA, OR, OI){
   const rows = teams.map(t=>{ const tg=T[t.id]||{}, ac=A[t.id]||{}; return {t,tg,ac,r:calc(rule,tg,ac)}; });
   const sum=(arr,f)=>arr.reduce((s,x)=>s+(Number(f(x))||0),0);
   const teamComplete = rows.every(x=>x.ac.rev!=null && x.ac.profit!=null);
@@ -316,7 +316,8 @@ function calcCompany(rule, teams, ohs, T, A, C, CA, OR){
   const tgRev=sum(rows,x=>x.tg.rev), acRev=sum(rows,x=>x.ac.rev);
   const tgTeamP=sum(rows,x=>x.tg.profit), acTeamP=sum(rows,x=>x.ac.profit);
   const tgCost=sum(ohs,o=>C[o.id]), acCost=sum(ohs,o=>CA[o.id]);
-  const coTarget=tgTeamP-tgCost, coActual=acTeamP-acCost;
+  const oiTg=(OI&&OI.tg)||0, oiAc=(OI&&OI.ac)||0;
+  const coTarget=tgTeamP-tgCost+oiTg, coActual=acTeamP-acCost+oiAc;
   const coRate = coTarget>0 ? coActual/coTarget*100 : null;
   const rawPool=sum(rows,x=>x.r.pool);
   let factor=1; const notes=[];
@@ -332,13 +333,13 @@ function calcCompany(rule, teams, ohs, T, A, C, CA, OR){
   rows.forEach(x=>{ x.pool = x.r.pool*factor; });
   const pool=rawPool*factor;
   const ohRev = Object.values(OR||{}).reduce((t,v)=>t+(Number(v)||0),0);
-  return {ohRev, allRev: acRev+ohRev, rows, complete, teamComplete, costComplete, tgRev, acRev, tgTeamP, acTeamP, tgCost, acCost, coTarget, coActual, coRate, rawPool, pool, factor, notes, after:coActual-pool};
+  return {oiTg, oiAc, ohRev, allRev: acRev+ohRev, rows, complete, teamComplete, costComplete, tgRev, acRev, tgTeamP, acTeamP, tgCost, acCost, coTarget, coActual, coRate, rawPool, pool, factor, notes, after:coActual-pool};
 }
-function simCompany(rule, teams, ohs, T, C, s, cs){
+function simCompany(rule, teams, ohs, T, C, s, cs, OI){
   const A={}, CA={};
   teams.forEach(t=>{ const tg=T[t.id]||{}; A[t.id]={rev:(tg.rev||0)*s/100, profit:(tg.profit||0)*s/100}; });
   ohs.forEach(o=>{ CA[o.id]=(C[o.id]||0)*cs/100; });
-  return calcCompany(rule, teams, ohs, T, A, C, CA);
+  return calcCompany(rule, teams, ohs, T, A, C, CA, null, OI? {tg:OI.tg, ac:OI.tg} : null);
 }
 function split(team, pool){
   const tot = team.members.reduce((s,m)=>s+(Number(m.share)||0),0) || 1;
@@ -487,6 +488,37 @@ function refreshPlanNumbers(tid){
     if(a && document.activeElement!==a) a.value = x.amt==null?"":fmtInput(Math.round(x.amt));
     if(r && document.activeElement!==r) r.value = x.rate==null?"":String(Math.round(x.rate*100)/100); });
 }
+/* ---------- 기타수익 (임대·이자·지원금 등) ---------- */
+const OI_DEFAULTS = ["임대수익","이자수익","지원금수익"];
+function oiOf(p){
+  const L=(p&&p.other)||[];
+  const tg=L.reduce((s,x)=>s+(Number(x.target)||0),0), ac=L.reduce((s,x)=>s+(Number(x.actual)||0),0);
+  return {list:L, tg, ac, has:L.length>0};
+}
+function oiPanel(p, mode, dis){
+  const o=oiOf(p); const locked=p.status==="confirmed";
+  const tgDis = dis || locked;
+  const rows = o.list.map((x,i)=>{
+    const nm=`<input type="text" class="cell name" id="oi-n-${i}" data-k="oi|${i}|name" value="${esc(x.name||"")}" ${tgDis?"disabled":""} aria-label="수익 항목명" placeholder="항목명">`;
+    const tgIn=input(`oi-t-${i}`, x.target, {disabled:tgDis, key:`oi|${i}|target`, label:(x.name||"항목")+" 목표", ph:"0"});
+    if(mode==="plan") return `<tr><td>${nm}</td><td>${tgIn}</td><td>${tgDis?"":`<button class="ghost small" data-act="oi-del" data-i="${i}">삭제</button>`}</td></tr>`;
+    const acIn=input(`oi-a-${i}`, x.actual, {disabled:dis, key:`oi|${i}|actual`, label:(x.name||"항목")+" 실제", ph:"실적 입력"});
+    const d = x.actual!=null && x.target!=null ? x.actual-x.target : null;
+    return `<tr><td>${nm}</td><td class="num">${cellN(x.target)}</td><td>${acIn}</td><td class="num">${d==null?"–":sgn(d)}</td><td>${tgDis?"":`<button class="ghost small" data-act="oi-del" data-i="${i}">삭제</button>`}</td></tr>`;
+  }).join("");
+  const head = mode==="plan" ? `<th class="l">항목</th><th>목표 금액</th><th></th>` : `<th class="l">항목</th><th>목표</th><th>실제</th><th>차이</th><th></th>`;
+  const cols = mode==="plan" ? 3 : 5;
+  const total = mode==="plan"
+    ? `<tr class="total"><td>기타수익 합계</td><td class="num">${nf.format(o.tg)}</td><td></td></tr>`
+    : `<tr class="total"><td>기타수익 합계</td><td class="num">${nf.format(o.tg)}</td><td class="num">${nf.format(o.ac)}</td><td class="num">${o.has?sgn(o.ac-o.tg):"–"}</td><td></td></tr>`;
+  return `<section class="panel"><div class="panel-head"><h2>기타수익</h2><span class="small muted">임대수익·이자수익·지원금수익 등 팀 매출 외 수익 · 성과급 대상 아님 · 전사 영업이익에 더함</span></div>
+    <div class="tbl-wrap"><table><thead><tr>${head}</tr></thead><tbody>
+    ${rows || `<tr><td colspan="${cols}" class="muted">아직 기타수익 항목이 없습니다.${tgDis?"":" 아래 버튼으로 추가하세요."}</td></tr>`}
+    ${total}</tbody></table></div>
+    ${tgDis?"":`<div class="plan-actions"><button data-act="oi-add">+ 기타수익 항목 추가</button>${o.has?"":`<button class="ghost" data-act="oi-defaults">기본 항목 넣기 (임대·이자·지원금)</button>`}</div>`}
+  </section>`;
+}
+
 function marginOf(tg){ if(tg.margin!=null) return tg.margin; return tg.rev? Math.round((tg.profit||0)/tg.rev*1000)/10 : null; }
 function marginInput(t, tg, dis){
   const m = marginOf(tg);
@@ -503,7 +535,7 @@ function ruleText(rule){
       ? `<b>매출과 팀 영업이익 목표를 모두 100% 이상 달성한 팀만</b> 지급 · 하나라도 미달이면 0원<br>팀 성과급 = 실제 팀 영업이익 × <b>${rule.poolRate}%</b>${rule.tiers.length>2?` × 구간 배수(종합 달성률 기준): ${t}`:""}`
       : `팀 성과급 = 실제 팀 영업이익 × <b>${rule.poolRate}%</b> × 구간 배수<br>구간 배수(종합 달성률 기준): ${t}`;
   }
-  const co = rule.coMode==="gate" ? `전사 영업이익(팀 영업이익 합계 − TF팀·경영총괄팀 비용) 달성률 <b>${rule.coGate}% 미만이면 전원 미지급</b>`
+  const co = rule.coMode==="gate" ? `전사 영업이익(팀 영업이익 합계 − 공통비 부서 비용 + 기타수익) 달성률 <b>${rule.coGate}% 미만이면 전원 미지급</b>`
     : rule.coMode==="scale" ? `전사 영업이익 달성률이 100% 미만이면 <b>그 비율만큼 전원 성과급 축소</b>`
     : `전사 영업이익 달성률은 지급 조건으로 쓰지 않음`;
   return `${main}<br>${w}<br>팀 상한: 팀 영업이익의 ${rule.capRate}% · 팀 영업이익이 0 이하이면 미지급<br>전사 조건: ${co} · 성과급 총액은 전사 영업이익의 ${rule.coCapRate}% 이내 · 전사 적자면 전원 미지급`;
@@ -588,7 +620,8 @@ function fmtDate(iso){ try{ return new Date(iso).toLocaleString("ko-KR",{year:"n
 function bridge(co, label){
   const rows=[
     ["4개 팀 영업이익 합계", co.tgTeamP, co.acTeamP, ""],
-    ["− TF팀·경영총괄팀 비용", -co.tgCost, -co.acCost, "neg"],
+    ["− 공통비 부서 비용", -co.tgCost, -co.acCost, "neg"],
+    ...((co.oiTg||co.oiAc) ? [["+ 기타수익 (임대·이자·지원금 등)", co.oiTg, co.oiAc, ""]] : []),
     ["= 전사 영업이익 (성과급 전)", co.coTarget, co.coActual, "sum"],
     ["− 성과급 총액", null, -co.pool, "neg"],
     ["= 성과급 반영 후 전사 영업이익", null, co.after, "sum"]
@@ -603,8 +636,9 @@ function bridge(co, label){
 function planView(){
   const p=cur(); const locked=p.status==="confirmed"; const teams=teamsFor(p), ohs=ohsFor(p), rule=ruleFor(p), T=targetsFor(p), C=costsFor(p);
   const dis = locked||!canWrite;
-  const base = simCompany(rule, teams, ohs, T, C, 100, 100);
-  const sim = simCompany(rule, teams, ohs, T, C, simPct, simCost);
+  const OIp = oiOf(p);
+  const base = simCompany(rule, teams, ohs, T, C, 100, 100, OIp);
+  const sim = simCompany(rule, teams, ohs, T, C, simPct, simCost, OIp);
   let h="";
   if(locked){
     h+=`<div class="notice lock"><span><b>${esc(p.label)} 목표가 확정되었습니다</b> (${fmtDate(p.confirmed.at)}). 팀 목표, 공통비 예산, 산정 기준이 고정되어 실적 비교에 그대로 쓰입니다.</span>
@@ -614,7 +648,7 @@ function planView(){
   }
   h+=`<div class="kpis">
     <div class="kpi"><span class="eyebrow">목표 매출</span><span class="v">${man(base.tgRev)}</span><span class="s">4개 팀 합계</span></div>
-    <div class="kpi"><span class="eyebrow">목표 전사 영업이익</span><span class="v">${man(base.coTarget)}</span><span class="s">팀 ${man(base.tgTeamP)} − 공통비 ${man(base.tgCost)}</span></div>
+    <div class="kpi"><span class="eyebrow">목표 전사 영업이익</span><span class="v">${man(base.coTarget)}</span><span class="s">팀 ${man(base.tgTeamP)} − 공통비 ${man(base.tgCost)}${base.oiTg?` + 기타수익 ${man(base.oiTg)}`:""}</span></div>
     <div class="kpi"><span class="eyebrow">100% 달성 시 성과급</span><span class="v">${man(base.pool)}</span><span class="s">반영 후 영업이익 ${man(base.after)}</span></div>
     <div class="kpi"><span class="eyebrow">가정 시나리오 성과급</span><span class="v">${man(sim.pool)}</span><span class="s">팀 ${simPct}% · 공통비 ${simCost}% 집행</span></div>
   </div>`;
@@ -632,9 +666,10 @@ function planView(){
   h+=`<tr class="total"><td>합계</td><td class="num">${nf.format(base.tgRev)}</td><td class="num">${base.tgRev?pct(base.tgTeamP/base.tgRev*100):"–"}</td><td class="num">${nf.format(base.tgTeamP)}</td><td class="num">${teams.reduce((s,t)=>s+t.members.length,0)}명</td></tr></tbody></table></div></section>`;
 
   // overhead budgets
+  h+=oiPanel(p,"plan",!canWrite);
   h+=`<section class="panel"><div class="panel-head"><h2>공통비 부서 비용 예산</h2><span class="small muted">성과급 대상 아님 · 전사 영업이익에서 차감</span></div>
   <div class="tbl-wrap"><table><thead><tr><th class="l">부서</th><th>비용 예산</th><th>팀 영업이익 대비</th></tr></thead><tbody>`;
-  ohs.forEach(o=>{ h+=`<tr><td><div class="team-name">${esc(o.name)} <span class="pill example">성과급 제외</span></div><div class="team-meta">인건비·운영비 등 해당 기간 총비용</div></td>
+  ohs.forEach(o=>{ h+=`<tr><td><div class="team-name">${esc(o.name)} <span class="pill example">성과급 제외</span></div><div class="team-meta">${o.id==="common"?"운영비 등 해당 기간 총비용":"인건비·운영비 등 해당 기간 총비용"}</div></td>
       <td>${input("cb-"+o.id, C[o.id], {disabled:dis,key:`c|${o.id}`,label:o.name+" 비용 예산",ph:"0"})}</td>
       <td class="num">${base.tgTeamP?pct((C[o.id]||0)/base.tgTeamP*100):"–"}</td></tr>`; });
   if(!ohs.length) h+=`<tr><td colspan="3" class="muted">공통비 부서가 없습니다. 산정 기준 탭에서 추가할 수 있습니다.</td></tr>`;
@@ -656,7 +691,7 @@ function planView(){
 
   // scenario matrix
   const steps=[70,80,90,100,110,120,130];
-  const sims = steps.map(s=>simCompany(rule, teams, ohs, T, C, s, simCost));
+  const sims = steps.map(s=>simCompany(rule, teams, ohs, T, C, s, simCost, OIp));
   const ready = teams.every(t=>T[t.id]?.rev && T[t.id]?.profit);
   h+=`<section class="panel"><div class="panel-head"><h2>달성률별 성과급</h2><span class="small muted">4개 팀이 같은 비율로 달성 · 공통비는 예산의 ${simCost}% 집행 가정</span></div>
   <div class="tbl-wrap"><table><thead><tr><th class="l">팀 달성률</th>${steps.map(s=>`<th>${s}%</th>`).join("")}</tr></thead><tbody>`;
@@ -665,7 +700,7 @@ function planView(){
   h+=`<tr class="sub"><td>전사 영업이익 (성과급 전)</td>${sims.map(c=>`<td class="num">${ready?man(c.coActual):"–"}</td>`).join("")}</tr>`;
   h+=`<tr class="sub"><td>전사 영업이익 달성률</td>${sims.map(c=>`<td class="num">${ready?pct(c.coRate):"–"}</td>`).join("")}</tr>`;
   h+=`<tr class="sub"><td>성과급 반영 후 영업이익</td>${sims.map(c=>`<td class="num" style="${c.after<0?"color:var(--bad)":""}">${ready?man(c.after):"–"}</td>`).join("")}</tr>`;
-  h+=`<tr class="sub"><td>전사 조건 적용</td>${sims.map(c=>`<td class="num">${!ready?"–":c.factor===1?"없음":c.factor===0?'<span class="pill bad">미지급</span>':"×"+(c.factor*100).toFixed(0)+"%"}</td>`).join("")}</tr>`;
+  h+=`<tr class="sub"><td>총액 상한에 따른 지급 비율</td>${sims.map(c=>`<td class="num">${!ready?"–":c.factor===1?"없음":c.factor===0?'<span class="pill bad">미지급</span>':"×"+(c.factor*100).toFixed(0)+"%"}</td>`).join("")}</tr>`;
   h+=`</tbody></table></div></section>`;
 
   // custom sim
@@ -690,7 +725,7 @@ function actualView(){
   const teams=teamsFor(p), ohs=ohsFor(p), rule=ruleFor(p), T=targetsFor(p), C=costsFor(p), A=p.actuals||{}, CA=p.costActuals||{};
   const dis=!canWrite;
   const OR=p.ohRevenue||{};
-  const co = calcCompany(rule, teams, ohs, T, A, C, CA, OR);
+  const co = calcCompany(rule, teams, ohs, T, A, C, CA, OR, oiOf(p));
   const entered = co.rows.filter(x=>x.ac.rev!=null&&x.ac.profit!=null).length + ohs.filter(o=>CA[o.id]!=null).length;
   const need = teams.length+ohs.length;
   const totRev = co.tgRev? co.acRev/co.tgRev*100:null;
@@ -734,6 +769,7 @@ function actualView(){
   h+=`<tr class="total"><td>합계</td><td class="num">${nf.format(co.tgRev)}</td><td class="num">${nf.format(co.acRev)}</td><td>${rateCell(totRev)}</td><td class="num">${nf.format(co.tgTeamP)}</td><td class="num">${nf.format(co.acTeamP)}</td><td>${rateCell(tpRate)}</td><td></td><td class="num">${conf?man(co.pool):"–"}</td></tr>`;
   h+=`</tbody></table></div></section>`;
 
+  h+=oiPanel(p,"actual",!canWrite);
   h+=`<section class="panel"><div class="panel-head"><h2>공통비 부서 비용 실적</h2><span class="small muted">성과급 대상 아님 · 순비용(비용 − 부서 자체 매출)을 전사 영업이익에서 차감 · 부서 자체 매출은 전사 매출에만 더해짐</span></div>
   <div class="tbl-wrap"><table><thead><tr><th class="l">부서</th><th>부서 자체 매출</th><th>${conf?"확정 ":""}비용 예산</th><th>실제 순비용</th><th>집행률</th><th>예산 대비</th></tr></thead><tbody>`;
   ohs.forEach(o=>{ const b=C[o.id], a=CA[o.id]; const r = b>0&&a!=null? a/b*100:null;
@@ -786,7 +822,7 @@ function ruleView(){
   h+=`</section>`;
 
   h+=`<section class="panel"><div class="panel-head"><h2>전사 지급 조건</h2><span class="small muted">전사 영업이익 = 4개 팀 영업이익 합계 − 공통비 부서 비용</span></div>
-    <p class="small muted" style="margin:0;max-width:68ch">TF팀·경영총괄팀처럼 매출 없이 비용만 쓰는 부서가 있으면 팀별로는 목표를 넘겨도 회사 전체 이익은 부족할 수 있습니다. 아래 조건으로 회사 이익이 확보된 범위 안에서만 성과급이 나가게 합니다.</p>
+    <p class="small muted" style="margin:0;max-width:68ch">경영총괄팀·영업팀처럼 비용 위주인 공통비 부서가 있으면 팀별로는 목표를 넘겨도 회사 전체 이익은 부족할 수 있습니다. 아래 조건으로 회사 이익이 확보된 범위 안에서만 성과급이 나가게 합니다.</p>
     <div class="seg" role="group" aria-label="전사 조건">
       <button data-act="comode" data-v="gate" aria-pressed="${r.coMode==="gate"}" ${dis?"disabled":""}>기준 미달 시 미지급</button>
       <button data-act="comode" data-v="scale" aria-pressed="${r.coMode==="scale"}" ${dis?"disabled":""}>달성률만큼 비례 지급</button>
@@ -829,7 +865,7 @@ function periodData(p){
   const A=p.actuals||{}, CA=p.costActuals||{}, OR=p.ohRevenue||{};
   const hasAct = hasActuals(p);
   const showAct = confirmed || hasAct;
-  const co = showAct? calcCompany(rule,teams,ohs,T,A,C,CA,OR) : simCompany(rule,teams,ohs,T,C,100,100);
+  const co = showAct? calcCompany(rule,teams,ohs,T,A,C,CA,OR,oiOf(p)) : simCompany(rule,teams,ohs,T,C,100,100,oiOf(p));
   const kind = confirmed? (co.complete? "확정 실적" : "잠정(실적 일부 미입력)") : (hasAct? "실적 · 목표 미확정(성과급 미산정)" : "예상(100% 달성 가정)");
   const payable = confirmed || !hasAct;   // 확정 기간 또는 실적 없는 예상치만 성과급 표기
   return {p,teams,ohs,rule,T,C,A,CA,confirmed,hasAct,showAct,payable,co,kind};
@@ -1119,6 +1155,12 @@ document.addEventListener("input", e=>{
     const [kind,id,field]=el.dataset.k.split("|");
     const v=parseNum(el.value);
     const draft = p && p.status!=="confirmed", conf = p && p.status==="confirmed";
+    if(kind==="oi" && p){
+      const [, idx, f2] = el.dataset.k.split("|"); const it=(p.other||[])[+idx]; if(!it) return;
+      if(f2==="name"){ if(!draft) return; it.name=el.value; queueSave(currentId); return; }
+      if(f2==="target" && !draft) return;
+      it[f2]=v; queueSave(currentId); render(); return;
+    }
     if(kind==="pl" && draft){
       const [, tid, pk, idx, pf] = el.dataset.k.split("|");
       p.targets=p.targets||{}; const tg=p.targets[tid]=p.targets[tid]||{};
@@ -1197,6 +1239,9 @@ document.addEventListener("click", e=>{
     if(act==="plan-clear"){ delete tg.plan; }
     queueSave(currentId); render(); return;
   }
+  if(act==="oi-add" && p){ p.other=p.other||[]; p.other.push({name:"",target:null,actual:null}); queueSave(currentId); render(); return; }
+  if(act==="oi-defaults" && p){ p.other=OI_DEFAULTS.map(n=>({name:n,target:null,actual:null})); queueSave(currentId); render(); return; }
+  if(act==="oi-del" && p){ (p.other||[]).splice(+b.dataset.i,1); queueSave(currentId); render(); return; }
   if(act==="ask-confirm"){ pendingConfirm="confirm"; render(); return; }
   if(act==="ask-unlock"){ pendingConfirm="unlock"; render(); return; }
   if(act==="ask-delete"){ pendingConfirm="delete"; render(); return; }
