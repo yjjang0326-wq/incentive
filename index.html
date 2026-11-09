@@ -137,6 +137,9 @@ table.bridge{max-width:680px}
 .login-row{display:flex;gap:8px;flex-wrap:wrap}
 .login-row input{flex:1;min-width:220px;background:var(--surface)}
 .who-chip{color:var(--band-ink-2);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pct-in{display:flex;align-items:center;gap:6px}
+.pct-in input{min-width:80px!important;max-width:110px}
+.pct-in span{color:var(--ink-2)}
 .chart-wrap{overflow-x:auto;border:1px solid var(--line-soft);border-radius:10px;padding:10px 8px 2px;background:var(--surface)}
 .legend{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--ink-2)}
 .legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
@@ -397,6 +400,11 @@ function rateCell(rate, inverse){ return `<div class="rate"><span class="num">${
 function input(id, val, opts={}){
   return `<input type="text" inputmode="numeric" class="cell ${opts.cls||""}" id="${id}" data-k="${opts.key||""}" value="${esc(fmtInput(val))}" ${opts.disabled?"disabled":""} aria-label="${esc(opts.label||"")}" placeholder="${esc(opts.ph||"")}">`;
 }
+function marginOf(tg){ if(tg.margin!=null) return tg.margin; return tg.rev? Math.round((tg.profit||0)/tg.rev*1000)/10 : null; }
+function marginInput(t, tg, dis){
+  const m = marginOf(tg);
+  return `<div class="pct-in"><input type="text" inputmode="decimal" class="cell" id="tg-mg-${t.id}" data-k="t|${t.id}|margin" value="${m==null?"":esc(String(m))}" ${dis?"disabled":""} aria-label="${esc(t.name)} 목표 이익률" placeholder="0"><span>%</span></div>`;
+}
 function ruleText(rule){
   const w = `종합 달성률 = 매출 달성률 × ${rule.wRev}% + 팀 영업이익 달성률 × ${rule.wProfit}%`;
   let main;
@@ -520,14 +528,15 @@ function planView(){
   </div>`;
 
   // team targets
-  h+=`<section class="panel"><div class="panel-head"><h2>성과급 대상 팀 목표</h2><span class="small muted">단위: 원 · 팀 영업이익은 공통비를 빼기 전 팀 단위 이익</span></div>
-  <div class="tbl-wrap"><table><thead><tr><th class="l">팀</th><th>목표 매출</th><th>목표 팀 영업이익</th><th>이익률</th><th>인원</th></tr></thead><tbody>`;
+  h+=`<section class="panel"><div class="panel-head"><h2>성과급 대상 팀 목표</h2><span class="small muted">단위: 원 · 이익률을 넣으면 목표 팀 영업이익이 자동 계산됩니다 · 팀 영업이익은 공동경비(임차료 등) 배분 후 금액</span></div>
+  <div class="tbl-wrap"><table><thead><tr><th class="l">팀</th><th>목표 매출</th><th>목표 이익률</th><th>목표 팀 영업이익</th><th>인원</th></tr></thead><tbody>`;
   teams.forEach(t=>{ const tg=T[t.id]||{};
     h+=`<tr><td><div class="team-name">${esc(t.name)}</div><div class="team-meta">${t.members.map(m=>esc(m.name)).join(" · ")}</div></td>
       <td>${input("tg-rev-"+t.id, tg.rev, {disabled:dis,key:`t|${t.id}|rev`,label:t.name+" 목표 매출",ph:"0"})}</td>
+      <td>${marginInput(t, tg, dis)}</td>
       <td>${input("tg-pf-"+t.id, tg.profit, {disabled:dis,key:`t|${t.id}|profit`,label:t.name+" 목표 영업이익",ph:"0"})}</td>
-      <td class="num">${tg.rev?pct((tg.profit||0)/tg.rev*100):"–"}</td><td class="num">${t.members.length}명</td></tr>`; });
-  h+=`<tr class="total"><td>합계</td><td class="num">${nf.format(base.tgRev)}</td><td class="num">${nf.format(base.tgTeamP)}</td><td class="num">${base.tgRev?pct(base.tgTeamP/base.tgRev*100):"–"}</td><td class="num">${teams.reduce((s,t)=>s+t.members.length,0)}명</td></tr></tbody></table></div></section>`;
+      <td class="num">${t.members.length}명</td></tr>`; });
+  h+=`<tr class="total"><td>합계</td><td class="num">${nf.format(base.tgRev)}</td><td class="num">${base.tgRev?pct(base.tgTeamP/base.tgRev*100):"–"}</td><td class="num">${nf.format(base.tgTeamP)}</td><td class="num">${teams.reduce((s,t)=>s+t.members.length,0)}명</td></tr></tbody></table></div></section>`;
 
   // overhead budgets
   h+=`<section class="panel"><div class="panel-head"><h2>공통비 부서 비용 예산</h2><span class="small muted">성과급 대상 아님 · 전사 영업이익에서 차감</span></div>
@@ -1016,7 +1025,17 @@ document.addEventListener("input", e=>{
     const [kind,id,field]=el.dataset.k.split("|");
     const v=parseNum(el.value);
     const draft = p && p.status!=="confirmed", conf = p && p.status==="confirmed";
-    if(kind==="t" && draft){ p.targets=p.targets||{}; p.targets[id]=p.targets[id]||{}; p.targets[id][field]=v; queueSave(currentId); }
+    if(kind==="t" && draft){ p.targets=p.targets||{}; const tg=p.targets[id]=p.targets[id]||{};
+      if(field==="margin"){
+        if(v==null) delete tg.margin; else { tg.margin=v; if(tg.rev!=null) tg.profit=Math.round(tg.rev*v/100); }
+        queueSave(currentId);
+        const pf=document.getElementById("tg-pf-"+id); if(pf) pf.value=fmtInput(tg.profit);
+        return;
+      }
+      tg[field]=v;
+      if(field==="rev" && tg.margin!=null && v!=null) tg.profit=Math.round(v*tg.margin/100);
+      if(field==="profit") delete tg.margin;
+      queueSave(currentId); }
     if(kind==="c" && draft){ p.costs=p.costs||{}; if(v==null) delete p.costs[id]; else p.costs[id]=v; queueSave(currentId); }
     if(kind==="a" && p){ p.actuals=p.actuals||{}; p.actuals[id]=p.actuals[id]||{}; p.actuals[id][field]=v; queueSave(currentId); }
     if(kind==="p" && p){ const pf=el.dataset.k.split("|")[3]; const part=field; p.actuals=p.actuals||{}; const ta=p.actuals[id]=p.actuals[id]||{}; ta.parts=ta.parts||{}; ta.parts[part]=ta.parts[part]||{}; ta.parts[part][pf]=v;
@@ -1031,9 +1050,10 @@ document.addEventListener("input", e=>{
   if(el.dataset.oh){ const [i,f]=el.dataset.oh.split("|"); config.overheads[+i][f]=el.value; queueSave("config"); return; }
   if(el.dataset.mem){ const [ti,mi,f]=el.dataset.mem.split("|"); config.teams[+ti].members[+mi][f]= f==="share"? (parseNum(el.value)??0) : el.value; queueSave("config"); if(f==="share") render(); return; }
 });
-document.addEventListener("focusout", e=>{ const el=e.target; if(!el.dataset) return; if(el.dataset.k){ el.value=fmtInput(parseNum(el.value)); } if(el.dataset.team||el.dataset.mem||el.dataset.oh) render(); });
+document.addEventListener("focusout", e=>{ const el=e.target; if(!el.dataset) return; if(el.dataset.k && !/\|margin$/.test(el.dataset.k)){ el.value=fmtInput(parseNum(el.value)); } if(el.dataset.team||el.dataset.mem||el.dataset.oh) render(); });
 document.addEventListener("change", e=>{
   const el=e.target;
+  if(el.dataset && /^t\|.*\|margin$/.test(el.dataset.k||"")){ render(); return; }
   if(el.id==="psel"){ currentId=el.value; pendingConfirm=null; render(); }
   if(el.id==="ysel"){ yearSel=+el.value; render(); }
   if(el.id==="np-type"){ const n=document.getElementById("np-n"); const t=el.value;
