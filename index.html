@@ -157,6 +157,8 @@ tr.plan-row > td{background:var(--sunk)!important;padding:14px;white-space:norma
 .plan-tbl input.cell{min-width:90px}
 .plan-tbl input.cell.name{min-width:120px}
 .plan-actions{display:flex;gap:8px;flex-wrap:wrap}
+.chk{display:flex;gap:8px;align-items:center;font-size:14px;color:var(--ink-2)}
+.chk input{width:18px;height:18px;accent-color:var(--accent)}
 .chart-wrap{overflow-x:auto;border:1px solid var(--line-soft);border-radius:10px;padding:10px 8px 2px;background:var(--surface)}
 .legend{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--ink-2)}
 .legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
@@ -243,7 +245,8 @@ const DEFAULT_CONFIG = {
     mode:"tier",            // tier | excess
     wRev:40, wProfit:60,
     poolRate:10,
-    tiers:[{min:0,mult:0},{min:80,mult:50},{min:100,mult:100},{min:120,mult:130}],
+    tiers:[{min:0,mult:0},{min:100,mult:100}],
+    requireBoth:true,          // 매출·영업이익 모두 100% 이상이어야 지급
     gate:100, base:1000000, excessRate:20,
     capRate:30,             // 팀 성과급 상한 = 팀 영업이익의 %
     coMode:"gate",          // none | gate | scale
@@ -294,8 +297,9 @@ function calc(rule, target, actual){
   } else {
     const tiers=[...(rule.tiers||[])].sort((a,b)=>a.min-b.min);
     let m=0; for(const t of tiers){ if(out.score>=t.min) m=t.mult; }
+    if(rule.requireBoth && (out.revRate<100 || out.profRate<100)){ m=0; out.reason = out.revRate<100 && out.profRate<100 ? "매출·영업이익 목표 미달" : out.revRate<100 ? "매출 목표 미달" : "영업이익 목표 미달"; }
     out.mult=m; pool = ap*(rule.poolRate||0)/100*m/100;
-    if(m===0) out.reason="최저 구간 미달";
+    if(m===0 && !out.reason) out.reason="목표 미달";
   }
   const cap = ap*(rule.capRate||0)/100;
   if(rule.capRate>0 && pool>cap){ pool=cap; out.capped=true; }
@@ -495,7 +499,9 @@ function ruleText(rule){
     main = `팀 영업이익 달성률 <b>${rule.gate}% 이상</b>일 때 팀 성과급 = 기본금 <b>${man(rule.base)}</b> + (실제 − 목표 팀 영업이익) × <b>${rule.excessRate}%</b>`;
   } else {
     const t=[...rule.tiers].sort((a,b)=>a.min-b.min).map((x,i,arr)=>{ const n=arr[i+1]; return `${x.min}%${n?"~"+n.min+"% 미만":" 이상"} → ${x.mult}%`; }).join(" · ");
-    main = `팀 성과급 = 실제 팀 영업이익 × <b>${rule.poolRate}%</b> × 구간 배수<br>구간 배수(종합 달성률 기준): ${t}`;
+    main = rule.requireBoth
+      ? `<b>매출과 팀 영업이익 목표를 모두 100% 이상 달성한 팀만</b> 지급 · 하나라도 미달이면 0원<br>팀 성과급 = 실제 팀 영업이익 × <b>${rule.poolRate}%</b>${rule.tiers.length>2?` × 구간 배수(종합 달성률 기준): ${t}`:""}`
+      : `팀 성과급 = 실제 팀 영업이익 × <b>${rule.poolRate}%</b> × 구간 배수<br>구간 배수(종합 달성률 기준): ${t}`;
   }
   const co = rule.coMode==="gate" ? `전사 영업이익(팀 영업이익 합계 − TF팀·경영총괄팀 비용) 달성률 <b>${rule.coGate}% 미만이면 전원 미지급</b>`
     : rule.coMode==="scale" ? `전사 영업이익 달성률이 100% 미만이면 <b>그 비율만큼 전원 성과급 축소</b>`
@@ -769,6 +775,7 @@ function ruleView(){
         : num("gate","지급 기준 팀 영업이익 달성률","% 이상")+num("base","기본금","원 / 팀")+num("excessRate","초과 영업이익 배분율","%")}
       ${num("capRate","팀 성과급 상한","% (팀 영업이익 대비)","0이면 상한 없음")}
     </div>`;
+  if(r.mode==="tier") h+=`<label class="chk"><input type="checkbox" id="r-requireBoth" data-act="req-both" ${r.requireBoth?"checked":""} ${dis?"disabled":""}> 매출과 팀 영업이익 목표를 <b>모두 100% 이상</b> 달성해야 지급 (하나라도 미달이면 0원)</label>`;
   if(r.mode==="tier"){
     h+=`<h3>달성률 구간</h3><div class="tbl-wrap"><table style="max-width:520px"><thead><tr><th class="l">종합 달성률 (이상)</th><th>지급 배수</th><th></th></tr></thead><tbody>`;
     r.tiers.forEach((t,i)=>{ h+=`<tr><td><div class="inline"><input type="text" id="ti-min-${i}" data-tier="${i}|min" value="${t.min}" ${dis?"disabled":""}><span>%</span></div></td>
@@ -1210,6 +1217,7 @@ document.addEventListener("click", e=>{
     render(); return;
   }
   if(act==="mode"){ config.rule.mode=b.dataset.v; queueSave("config"); render(); return; }
+  if(act==="req-both"){ config.rule.requireBoth=!!b.checked; queueSave("config"); render(); return; }
   if(act==="comode"){ config.rule.coMode=b.dataset.v; queueSave("config"); render(); return; }
   if(act==="tier-add"){ const last=config.rule.tiers[config.rule.tiers.length-1]||{min:0,mult:0}; config.rule.tiers.push({min:last.min+10,mult:last.mult+20}); queueSave("config"); render(); return; }
   if(act==="tier-del"){ config.rule.tiers.splice(+b.dataset.i,1); queueSave("config"); render(); return; }
