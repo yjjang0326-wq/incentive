@@ -424,7 +424,9 @@ function ruleText(rule){
 function render(){
   const ae=document.activeElement; const fid=ae&&ae.id; let selEnd=null;
   if(fid && ae.tagName==="INPUT" && ae.type==="text"){ selEnd = ae.value.length - (ae.selectionEnd??ae.value.length); }
-  if(mode!=="db" || access==="none"){ if(supa) renderLogin(); return; }
+  if(showLogin){ renderLogin(); return; }
+  if(needPw){ renderPassword(); return; }
+  if(mode!=="db"){ return; }
   ensureCurrent();
   renderPeriodBar(); renderTabs(); renderNotice();
   const v=document.getElementById("view");
@@ -454,6 +456,7 @@ function renderPeriodBar(){
   if(canWrite && exN) h+=`<button class="ghost" data-act="ask-del-examples">예시 ${exN}개 삭제</button>`;
   if(dl && list.length) h+=`<button class="xl" data-act="toggle-export" aria-expanded="${showExport}">엑셀 내려받기</button>`;
   if(sbUser) h+=`<span class="who-chip small" title="${esc(sbUser.email)}">${esc(sbUser.email)} · ${canWrite?"관리자":"보기 전용"}</span><button class="ghost" data-act="logout">로그아웃</button>`;
+  else h+=`<span class="who-chip small">열람 모드</span><button class="ghost" data-act="lock">나가기</button><button class="ghost" data-act="show-login">관리자 로그인</button>`;
   pb.innerHTML=h;
   if(pendingConfirm==="examples" && canWrite){
     pb.innerHTML += `<div class="newp" style="flex-basis:100%"><span class="small">이름에 (예시)가 붙은 기간 ${exN}개를 모두 삭제합니다. 직접 만든 기간과 산정 기준은 그대로 남습니다.</span>
@@ -482,7 +485,7 @@ function renderTabs(){
 }
 function renderNotice(){
   const el=document.getElementById("notice"); let h="";
-  if(!canWrite && mode==="db") h+=`<div class="notice info"><span>보기 전용입니다. 목표와 실적은 인사팀 관리자만 바꿀 수 있습니다.</span></div>`;
+  if(!canWrite && mode==="db") h+=`<div class="notice info"><span>보기 전용 화면입니다. 목표와 실적은 인사팀 관리자가 로그인해야 바꿀 수 있습니다.</span></div>`;
   el.innerHTML=h; el.style.display=h?"flex":"none"; el.style.flexDirection="column"; el.style.gap="8px";
 }
 function emptyView(){
@@ -1112,7 +1115,11 @@ window.addEventListener("hashchange", route);
 
 /* ---------- boot (Supabase) ---------- */
 const SB_URL = "https://jxikjsdaswejifcpjesn.supabase.co", SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4aWtqc2Rhc3dlamlmY3BqZXNuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTExOTgzNDgsImV4cCI6MjEwNjc3NDM0OH0.yNj4rHUlOV70vZJC-NRQIu-TNnR7OXfCgo2VsCs2Sx4";
-let supa = null, sbUser = null, access = "none", authMsg = "", authBusy = false;
+let supa = null, sbUser = null, access = "none", authMsg = "", authBusy = false, showLogin = false;
+let needPw = false, pwMsg = "", pwBusy = false, viewPw = null;
+const PW_KEY = "mincom-incentive-view";
+function pwGet(){ try{ return localStorage.getItem(PW_KEY); }catch(e){ return null; } }
+function pwSet(v){ try{ if(v==null) localStorage.removeItem(PW_KEY); else localStorage.setItem(PW_KEY, v); }catch(e){} }
 function webDownloads(){
   return { save: async ({filename, data})=>{
     const blob = data instanceof Blob ? data : new Blob([data]);
@@ -1120,23 +1127,47 @@ function webDownloads(){
     a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(url), 4000); return {status:"saved"}; } };
 }
+function renderPassword(){
+  document.getElementById("tabs").style.display="none";
+  document.getElementById("periodbar").innerHTML = "";
+  document.getElementById("notice").style.display="none";
+  document.getElementById("view").innerHTML=`<section class="panel login"><h2>열람 비밀번호</h2>
+    <p class="muted">이 페이지는 비밀번호를 아는 분만 볼 수 있습니다. 전달받은 열람 비밀번호를 입력하세요.</p>
+    <form id="pwForm" class="login-row"><input type="password" id="viewPw" required autocomplete="current-password" aria-label="열람 비밀번호" placeholder="비밀번호">
+    <button class="primary" type="submit" ${pwBusy?"disabled":""}>열기</button></form>
+    ${pwMsg?`<div class="notice warn"><span>${esc(pwMsg)}</span></div>`:""}
+    <p class="small muted" style="margin:0">한 번 열면 이 브라우저에서는 다시 묻지 않습니다. 공용 PC에서는 다 본 뒤 오른쪽 위 「나가기」를 누르세요.</p>
+    <div><button class="ghost" data-act="show-login">관리자 로그인 (수정용)</button></div></section>`;
+  const el=document.getElementById("viewPw"); if(el) el.focus();
+}
+async function loadViewer(pw){
+  const { data, error } = await supa.rpc("get_viewer_data", { pw });
+  if(error) throw error;
+  if(data.config && !(dirty.config||writing.config)) applyConfig(data.config);
+  const next={}; (data.periods||[]).forEach(r=>{ next[r.id]=normalizePeriod(clone(r.data)); });
+  periods=next;
+}
+document.addEventListener("submit", async e=>{
+  if(e.target.id!=="pwForm") return; e.preventDefault();
+  const pw=document.getElementById("viewPw").value; if(!pw) return;
+  pwBusy=true; pwMsg=""; renderPassword();
+  try{ await loadViewer(pw); viewPw=pw; pwSet(pw); needPw=false; pwBusy=false; mode="db"; document.getElementById("tabs").style.display=""; render(); }
+  catch(err){ pwBusy=false; const m=(err&&err.message)||"";
+    pwMsg = /too_many/.test(m) ? "비밀번호를 여러 번 틀려 잠시 막혔습니다. 10분 뒤 다시 시도하세요." : /invalid_password/.test(m) ? "비밀번호가 맞지 않습니다." : "연결하지 못했습니다. 잠시 후 다시 시도하세요.";
+    renderPassword(); }
+});
 function renderLogin(){
   document.getElementById("tabs").style.display="none";
   document.getElementById("periodbar").innerHTML = "";
   document.getElementById("notice").style.display="none";
   const v=document.getElementById("view");
-  if(sbUser && access==="none"){
-    v.innerHTML=`<section class="panel login"><h2>접근 권한이 없습니다</h2>
-      <p class="muted">${esc(sbUser.email)} 계정은 이 페이지를 볼 수 없습니다. 회사 이메일(@min-company.co.kr)로 로그인하거나, 인사팀에 열람 권한을 요청하세요.</p>
-      <div><button data-act="logout">다른 이메일로 로그인</button></div></section>`;
-    return;
-  }
-  v.innerHTML=`<section class="panel login"><h2>로그인</h2>
-    <p class="muted">회사 이메일 주소를 입력하면 로그인 링크를 보내 드립니다. 메일의 링크를 누르면 이 페이지로 돌아와 바로 열립니다.</p>
+  v.innerHTML=`<section class="panel login"><h2>관리자 로그인</h2>
+    <p class="muted">보기는 로그인 없이 됩니다. 목표·실적을 수정하려는 관리자만 로그인하세요. 이메일로 받은 링크를 누르면 이 페이지로 돌아와 수정할 수 있게 열립니다.</p>
     <form id="loginForm" class="login-row"><input type="email" id="loginEmail" required placeholder="name@min-company.co.kr" autocomplete="email" aria-label="이메일">
     <button class="primary" type="submit" ${authBusy?"disabled":""}>로그인 링크 받기</button></form>
     ${authMsg?`<div class="notice info"><span>${esc(authMsg)}</span></div>`:""}
-    <p class="small muted" style="margin:0">비밀번호는 필요 없습니다. 링크는 한 번만 쓸 수 있고 잠시 뒤 만료됩니다.</p></section>`;
+    <p class="small muted" style="margin:0">비밀번호는 필요 없습니다. 링크는 한 번만 쓸 수 있고 잠시 뒤 만료됩니다.</p>
+    <div><button data-act="hide-login">← 보기 화면으로 돌아가기</button></div></section>`;
 }
 document.addEventListener("submit", async e=>{
   if(e.target.id!=="loginForm") return; e.preventDefault();
@@ -1149,8 +1180,12 @@ document.addEventListener("submit", async e=>{
   renderLogin();
 });
 document.addEventListener("click", async e=>{
-  const b=e.target.closest("[data-act=logout]"); if(!b) return;
-  await supa.auth.signOut(); sbUser=null; access="none"; mode="loading"; periods={}; renderLogin();
+  const b=e.target.closest("[data-act=logout],[data-act=show-login],[data-act=hide-login],[data-act=lock]"); if(!b) return;
+  const a=b.dataset.act;
+  if(a==="lock"){ pwSet(null); viewPw=null; periods={}; needPw=true; pwMsg=""; mode="loading"; render(); return; }
+  if(a==="show-login"){ showLogin=true; authMsg=""; render(); return; }
+  if(a==="hide-login"){ showLogin=false; if(!needPw) document.getElementById("tabs").style.display=""; render(); return; }
+  await supa.auth.signOut(); sbUser=null; await enterApp();
 });
 async function loadAll(){
   const [{data:cfg, error:e1},{data:ps, error:e2}] = await Promise.all([
@@ -1177,15 +1212,23 @@ function subscribe(){
 }
 function softRender(){ const ae=document.activeElement; if(!(ae&&ae.tagName==="INPUT"&&ae.type==="text")) render(); }
 async function enterApp(){
-  try{
-    const { data:acc, error } = await supa.rpc("my_access");
-    access = error ? "none" : (acc||"none");
-  }catch(e){ access="none"; }
-  if(access==="none"){ renderLogin(); return; }
+  access="viewer"; showLogin=false;
+  if(sbUser){
+    try{ const { data:acc, error } = await supa.rpc("my_access"); if(!error && acc==="admin") access="admin"; }catch(e){}
+  }
   canWrite = access==="admin";
-  document.getElementById("tabs").style.display="";
-  try{ await loadAll(); mode="db"; }catch(e){ mode="db"; lastErr="데이터를 불러오지 못했습니다. 새로고침해 주세요."; }
-  subscribe(); render();
+  if(canWrite){
+    needPw=false;
+    document.getElementById("tabs").style.display="";
+    try{ await loadAll(); mode="db"; }catch(e){ mode="db"; lastErr="데이터를 불러오지 못했습니다. 새로고침해 주세요."; }
+    subscribe(); render(); return;
+  }
+  const saved = viewPw || pwGet();
+  if(saved){
+    try{ await loadViewer(saved); viewPw=saved; needPw=false; mode="db"; document.getElementById("tabs").style.display=""; render(); return; }
+    catch(e){ pwSet(null); viewPw=null; pwMsg = /invalid_password/.test((e&&e.message)||"") ? "열람 비밀번호가 바뀌었습니다. 새 비밀번호를 입력하세요." : ""; }
+  }
+  needPw=true; mode="loading"; render();
 }
 async function boot(){
   dl = webDownloads();
@@ -1194,13 +1237,15 @@ async function boot(){
   supa = window.supabase.createClient(SB_URL, SB_KEY, { auth:{ persistSession:true, detectSessionInUrl:true, flowType:"implicit" } });
   const { data:{ session } } = await supa.auth.getSession();
   sbUser = session?.user || null;
-  if(sbUser) await enterApp(); else renderLogin();
+  await enterApp();
   supa.auth.onAuthStateChange(async (ev, s)=>{
     const u=s?.user||null;
     if(u && (!sbUser || u.id!==sbUser.id)){ sbUser=u; await enterApp(); }
-    if(!u && sbUser){ sbUser=null; access="none"; renderLogin(); }
+    if(!u && sbUser){ sbUser=null; await enterApp(); }
   });
-  window.addEventListener("focus", async ()=>{ if(mode==="db" && access!=="none"){ try{ await loadAll(); softRender(); }catch(e){} } });
+  const refresh = async ()=>{ if(mode!=="db") return; try{ if(canWrite) await loadAll(); else if(viewPw) await loadViewer(viewPw); softRender(); }catch(e){} };
+  window.addEventListener("focus", refresh);
+  setInterval(()=>{ if(!canWrite && !document.hidden) refresh(); }, 60000);
 }
 boot();
 
