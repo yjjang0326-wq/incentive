@@ -340,12 +340,13 @@ async function flush(key){
   writing[key]=true; dirty[key]=false; saving++; setSaveState();
   try{
     let res;
-    if(key==="config") res = await supa.from("config").upsert({id:"main", data:clone(config)});
-    else if(periods[key]) res = await supa.from("periods").upsert({id:key, data:clone(periods[key])});
+    const viaPw = access!=="admin" && viewPw;
+    if(key==="config") res = viaPw ? await supa.rpc("pw_save_config",{pw:viewPw, payload:clone(config)}) : await supa.from("config").upsert({id:"main", data:clone(config)});
+    else if(periods[key]) res = viaPw ? await supa.rpc("pw_save_period",{pw:viewPw, period_id:key, payload:clone(periods[key])}) : await supa.from("periods").upsert({id:key, data:clone(periods[key])});
     if(res && res.error) throw res.error;
     lastErr="";
   }catch(e){
-    const denied = e && (e.code==="42501" || /row-level security|permission/i.test(e.message||""));
+    const denied = e && (e.code==="42501" || /row-level security|permission|invalid_password/i.test(e.message||""));
     lastErr = denied ? "저장 권한이 없습니다. 보기 전용으로 전환합니다." : "저장하지 못했습니다. 잠시 후 다시 입력해 주세요.";
     if(denied){ canWrite=false; render(); }
   }finally{ writing[key]=false; saving--; setSaveState(); }
@@ -456,7 +457,7 @@ function renderPeriodBar(){
   if(canWrite && exN) h+=`<button class="ghost" data-act="ask-del-examples">예시 ${exN}개 삭제</button>`;
   if(dl && list.length) h+=`<button class="xl" data-act="toggle-export" aria-expanded="${showExport}">엑셀 내려받기</button>`;
   if(sbUser) h+=`<span class="who-chip small" title="${esc(sbUser.email)}">${esc(sbUser.email)} · ${canWrite?"관리자":"보기 전용"}</span><button class="ghost" data-act="logout">로그아웃</button>`;
-  else h+=`<span class="who-chip small">열람 모드</span><button class="ghost" data-act="lock">나가기</button><button class="ghost" data-act="show-login">관리자 로그인</button>`;
+  else h+=`<span class="who-chip small">비밀번호 접속 · 편집 가능</span><button class="ghost" data-act="lock">나가기</button><button class="ghost" data-act="show-login">관리자 로그인</button>`;
   pb.innerHTML=h;
   if(pendingConfirm==="examples" && canWrite){
     pb.innerHTML += `<div class="newp" style="flex-basis:100%"><span class="small">이름에 (예시)가 붙은 기간 ${exN}개를 모두 삭제합니다. 직접 만든 기간과 산정 기준은 그대로 남습니다.</span>
@@ -1014,7 +1015,7 @@ async function exportYear(){
 
 function delExamples(){
   const ids=Object.keys(periods).filter(id=>periods[id].example);
-  ids.forEach(id=>{ delete periods[id]; supa.from("periods").delete().eq("id",id).then(r=>{ if(r.error){ lastErr="일부 예시를 삭제하지 못했습니다."; setSaveState(); } }); });
+  ids.forEach(id=>{ delete periods[id]; delPeriod(id).then(r=>{ if(r.error){ lastErr="일부 예시를 삭제하지 못했습니다."; setSaveState(); } }); });
   currentId=null; pendingConfirm=null; render();
 }
 /* ---------- events ---------- */
@@ -1100,7 +1101,7 @@ document.addEventListener("click", e=>{
   }
   if(act==="do-delete" && p){
     const id=currentId; delete periods[id]; currentId=null; pendingConfirm=null;
-    supa.from("periods").delete().eq("id",id).then(r=>{ if(r.error){ lastErr="삭제하지 못했습니다."; setSaveState(); } });
+    delPeriod(id).then(r=>{ if(r.error){ lastErr="삭제하지 못했습니다."; setSaveState(); } });
     render(); return;
   }
   if(act==="mode"){ config.rule.mode=b.dataset.v; queueSave("config"); render(); return; }
@@ -1131,27 +1132,29 @@ function renderPassword(){
   document.getElementById("tabs").style.display="none";
   document.getElementById("periodbar").innerHTML = "";
   document.getElementById("notice").style.display="none";
-  document.getElementById("view").innerHTML=`<section class="panel login"><h2>열람 비밀번호</h2>
-    <p class="muted">이 페이지는 비밀번호를 아는 분만 볼 수 있습니다. 전달받은 열람 비밀번호를 입력하세요.</p>
-    <form id="pwForm" class="login-row"><input type="password" id="viewPw" required autocomplete="current-password" aria-label="열람 비밀번호" placeholder="비밀번호">
+  document.getElementById("view").innerHTML=`<section class="panel login"><h2>접속 비밀번호</h2>
+    <p class="muted">이 페이지는 비밀번호를 아는 분만 볼 수 있습니다. 전달받은 비밀번호를 입력하면 보기와 수정을 모두 할 수 있습니다.</p>
+    <form id="pwForm" class="login-row"><input type="password" id="viewPw" required autocomplete="current-password" aria-label="접속 비밀번호" placeholder="비밀번호">
     <button class="primary" type="submit" ${pwBusy?"disabled":""}>열기</button></form>
     ${pwMsg?`<div class="notice warn"><span>${esc(pwMsg)}</span></div>`:""}
     <p class="small muted" style="margin:0">한 번 열면 이 브라우저에서는 다시 묻지 않습니다. 공용 PC에서는 다 본 뒤 오른쪽 위 「나가기」를 누르세요.</p>
     <div><button class="ghost" data-act="show-login">관리자 로그인 (수정용)</button></div></section>`;
   const el=document.getElementById("viewPw"); if(el) el.focus();
 }
+function delPeriod(id){ return (access!=="admin" && viewPw) ? supa.rpc("pw_delete_period",{pw:viewPw, period_id:id}) : supa.from("periods").delete().eq("id",id); }
 async function loadViewer(pw){
   const { data, error } = await supa.rpc("get_viewer_data", { pw });
   if(error) throw error;
   if(data.config && !(dirty.config||writing.config)) applyConfig(data.config);
-  const next={}; (data.periods||[]).forEach(r=>{ next[r.id]=normalizePeriod(clone(r.data)); });
+  const next={}; (data.periods||[]).forEach(r=>{ next[r.id] = (dirty[r.id]||writing[r.id]) && periods[r.id] ? periods[r.id] : normalizePeriod(clone(r.data)); });
+  Object.keys(periods).forEach(id=>{ if(!next[id] && (dirty[id]||writing[id])) next[id]=periods[id]; });
   periods=next;
 }
 document.addEventListener("submit", async e=>{
   if(e.target.id!=="pwForm") return; e.preventDefault();
   const pw=document.getElementById("viewPw").value; if(!pw) return;
   pwBusy=true; pwMsg=""; renderPassword();
-  try{ await loadViewer(pw); viewPw=pw; pwSet(pw); needPw=false; pwBusy=false; mode="db"; document.getElementById("tabs").style.display=""; render(); }
+  try{ await loadViewer(pw); viewPw=pw; pwSet(pw); canWrite=true; needPw=false; pwBusy=false; mode="db"; document.getElementById("tabs").style.display=""; render(); }
   catch(err){ pwBusy=false; const m=(err&&err.message)||"";
     pwMsg = /too_many/.test(m) ? "비밀번호를 여러 번 틀려 잠시 막혔습니다. 10분 뒤 다시 시도하세요." : /invalid_password/.test(m) ? "비밀번호가 맞지 않습니다." : "연결하지 못했습니다. 잠시 후 다시 시도하세요.";
     renderPassword(); }
@@ -1225,7 +1228,7 @@ async function enterApp(){
   }
   const saved = viewPw || pwGet();
   if(saved){
-    try{ await loadViewer(saved); viewPw=saved; needPw=false; mode="db"; document.getElementById("tabs").style.display=""; render(); return; }
+    try{ await loadViewer(saved); viewPw=saved; canWrite=true; needPw=false; mode="db"; document.getElementById("tabs").style.display=""; render(); return; }
     catch(e){ pwSet(null); viewPw=null; pwMsg = /invalid_password/.test((e&&e.message)||"") ? "열람 비밀번호가 바뀌었습니다. 새 비밀번호를 입력하세요." : ""; }
   }
   needPw=true; mode="loading"; render();
@@ -1243,9 +1246,9 @@ async function boot(){
     if(u && (!sbUser || u.id!==sbUser.id)){ sbUser=u; await enterApp(); }
     if(!u && sbUser){ sbUser=null; await enterApp(); }
   });
-  const refresh = async ()=>{ if(mode!=="db") return; try{ if(canWrite) await loadAll(); else if(viewPw) await loadViewer(viewPw); softRender(); }catch(e){} };
+  const refresh = async ()=>{ if(mode!=="db") return; try{ if(access==="admin") await loadAll(); else if(viewPw) await loadViewer(viewPw); softRender(); }catch(e){} };
   window.addEventListener("focus", refresh);
-  setInterval(()=>{ if(!canWrite && !document.hidden) refresh(); }, 60000);
+  setInterval(()=>{ if(access!=="admin" && viewPw && !document.hidden) refresh(); }, 60000);
 }
 boot();
 
