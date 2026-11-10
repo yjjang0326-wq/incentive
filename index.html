@@ -477,7 +477,7 @@ function planRow(t, tg, dis){
     </tbody></table></div>
     ${dis?"":`<div><button class="ghost small" data-act="plan-add" data-t="${t.id}" data-kind="${kind}">+ ${title} 항목 추가</button></div>`}
   </div>`;
-  return `<tr class="plan-row"><td colspan="5"><div class="plan-wrap">
+  return `<tr class="plan-row"><td colspan="8"><div class="plan-wrap">
     <div class="plan-summary">
       <span>목표 매출 <b class="num">${nf.format(c.rev)}</b></span>
       <span>− 변동비 <b class="num">${nf.format(Math.round(c.vs))}</b> <span class="muted">(${pctTxt(c.vr)})</span></span>
@@ -501,6 +501,15 @@ function refreshPlanNumbers(tid){
     if(a && document.activeElement!==a) a.value = x.amt==null?"":fmtInput(Math.round(x.amt));
     if(r && document.activeElement!==r) r.value = x.rate==null?"":String(Math.round(x.rate*100)/100); });
 }
+/* 공통비 인원 배분: 같은 이름이 여러 팀에 있으면 팀 수만큼 나눠 반영 (예: 바이럴·커머스 겸직 → 0.5명씩) */
+function ohHeads(teams){
+  const key=m=>String(m.name||"").trim();
+  const cnt={}; teams.forEach(t=>t.members.forEach(m=>{ const k=key(m); if(k) cnt[k]=(cnt[k]||0)+1; }));
+  const w={}; teams.forEach(t=>{ w[t.id]=t.members.reduce((s,m)=>{ const k=key(m); return s+(k&&cnt[k]>1?1/cnt[k]:1); },0); });
+  const total=Object.values(w).reduce((a,b)=>a+b,0);
+  return {w,total};
+}
+const hc = v => (Math.round(v*10)/10)+"명";
 /* ---------- 공통비 부서 비용 항목 ---------- */
 const openOh = {};
 const OH_ITEM_DEFAULTS = {
@@ -705,16 +714,22 @@ function planView(){
   </div>`;
 
   // team targets
-  h+=`<section class="panel"><div class="panel-head"><h2>성과급 대상 팀 목표</h2><span class="small muted">단위: 원 · 팀 이름을 누르면 변동비·고정비 지출 계획을 넣을 수 있습니다 · 팀 영업이익은 공동경비(임차료 등) 배분 후 금액</span></div>
-  <div class="tbl-wrap"><table><thead><tr><th class="l">팀</th><th>목표 매출</th><th>목표 이익률</th><th>목표 팀 영업이익</th><th>인원</th></tr></thead><tbody>`;
+  h+=`<section class="panel"><div class="panel-head"><h2>성과급 대상 팀 목표</h2><span class="small muted">단위: 원 · 팀 이름을 누르면 변동비·고정비 지출 계획을 넣을 수 있습니다 · 공통비 배분 = 공통비 합계 ÷ 인원 × 팀 인원 (겸직자는 팀 수만큼 나눠 반영)</span></div>
+  <div class="tbl-wrap"><table><thead><tr><th class="l">팀</th><th>목표 매출</th><th>목표 이익률</th><th>목표 팀 영업이익</th><th>인원</th><th>공통비 배분</th><th>공통비 포함 이익</th><th>공통비 포함 이익률</th></tr></thead><tbody>`;
+  const HD=ohHeads(teams); const perHead=HD.total? base.tgCost/HD.total : 0;
+  let sumAfter=0;
   teams.forEach(t=>{ const tg=T[t.id]||{}; const pc=planCalc(tg, t.id); const planOn=!!(pc&&pc.active); const open=!!openPlan[t.id];
     h+=`<tr class="${open?"plan-open":""}"><td><button class="team-toggle" data-act="plan-toggle" data-t="${t.id}" aria-expanded="${open}"><span class="chev">${open?"▾":"▸"}</span><span><span class="team-name">${esc(t.name)}</span><span class="team-meta">${planOn?"지출 계획 기준":"상세 지출 계획"} · ${t.members.length}명</span></span></button></td>
       <td>${input("tg-rev-"+t.id, tg.rev, {disabled:dis,key:`t|${t.id}|rev`,label:t.name+" 목표 매출",ph:"0"})}</td>
       <td>${marginInput(t, tg, dis||planOn)}</td>
       <td>${input("tg-pf-"+t.id, tg.profit, {disabled:dis||planOn,key:`t|${t.id}|profit`,label:t.name+" 목표 영업이익",ph:"0"})}</td>
-      <td class="num">${t.members.length}명</td></tr>`;
+      <td class="num">${hc(HD.w[t.id])}${HD.w[t.id]!==t.members.length?`<div class="team-meta">소속 ${t.members.length}명</div>`:""}</td>`;
+    const alloc=perHead*HD.w[t.id], after=(Number(tg.profit)||0)-alloc; sumAfter+=after;
+    h+=`<td class="num">${nf.format(Math.round(alloc))}</td>
+      <td class="num" style="${after<0?"color:var(--bad)":""}">${nf.format(Math.round(after))}</td>
+      <td class="num" style="${after<0?"color:var(--bad)":""}">${tg.rev>0?pct(after/tg.rev*100):"–"}</td></tr>`;
     if(open) h+=planRow(t, tg, dis); });
-  h+=`<tr class="total"><td>합계</td><td class="num">${nf.format(base.tgRev)}</td><td class="num">${base.tgRev?pct(base.tgTeamP/base.tgRev*100):"–"}</td><td class="num">${nf.format(base.tgTeamP)}</td><td class="num">${teams.reduce((s,t)=>s+t.members.length,0)}명</td></tr></tbody></table></div></section>`;
+  h+=`<tr class="total"><td>합계</td><td class="num">${nf.format(base.tgRev)}</td><td class="num">${base.tgRev?pct(base.tgTeamP/base.tgRev*100):"–"}</td><td class="num">${nf.format(base.tgTeamP)}</td><td class="num">${hc(HD.total)}</td><td class="num">${nf.format(Math.round(base.tgCost))}</td><td class="num">${nf.format(Math.round(sumAfter))}</td><td class="num">${base.tgRev?pct(sumAfter/base.tgRev*100):"–"}</td></tr></tbody></table></div>${HD.total?`<p class="small muted" style="margin:0">1인당 공통비 ${nf.format(Math.round(perHead))}원 (공통비 합계 ${nf.format(Math.round(base.tgCost))}원 ÷ ${hc(HD.total)})</p>`:""}</section>`;
 
   // overhead budgets
   h+=oiPanel(p,"plan",!canWrite);
