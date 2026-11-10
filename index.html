@@ -501,6 +501,43 @@ function refreshPlanNumbers(tid){
     if(a && document.activeElement!==a) a.value = x.amt==null?"":fmtInput(Math.round(x.amt));
     if(r && document.activeElement!==r) r.value = x.rate==null?"":String(Math.round(x.rate*100)/100); });
 }
+/* ---------- 공통비 부서 비용 항목 ---------- */
+const openOh = {};
+const OH_ITEM_DEFAULTS = {
+  mgmt:   ["인건비","4대보험(회사분)","복리후생비"],
+  sales:  ["인건비","4대보험(회사분)","운영비"],
+  exec:   ["임원 인건비","르네상스","차량유지비","복리후생비","통신비"],
+  common: ["사무실 임차료","관리비","통신비","복리후생비","교통비","지급수수료(구독료)"],
+  _:      ["인건비","운영비"]
+};
+function costItemsFor(p){ return isLocked(p) ? (p.confirmed.costItems||{}) : (p.costItems||{}); }
+function ohItemSum(list){ return (list||[]).reduce((s,x)=>s+(Number(x.amt)||0),0); }
+function ohItemsActive(list){ return (list||[]).some(x=>x.amt!=null); }
+function applyOhItems(p, oid){
+  const L=(p.costItems||{})[oid];
+  p.costs=p.costs||{};
+  if(ohItemsActive(L)) p.costs[oid]=Math.round(ohItemSum(L));
+}
+function ohItemRow(o, list, dis){
+  const L=list||[]; const sum=ohItemSum(L);
+  const line=(x,i)=>{
+    const base=`oc|${o.id}|${i}`;
+    return `<tr><td><input type="text" class="cell name" id="ocn-${o.id}-${i}" data-k="${base}|name" value="${esc(x.name||"")}" ${dis?"disabled":""} aria-label="항목명" placeholder="항목명"></td>
+      <td><input type="text" inputmode="numeric" class="cell" id="oca-${o.id}-${i}" data-k="${base}|amt" value="${esc(fmtInput(x.amt))}" ${dis?"disabled":""} aria-label="${esc(x.name||"항목")} 금액" placeholder="0"></td>
+      <td><input type="text" class="cell name" id="ocm-${o.id}-${i}" data-k="${base}|memo" value="${esc(x.memo||"")}" ${dis?"disabled":""} aria-label="${esc(x.name||"항목")} 메모" placeholder="메모 (예: 9월 손익 기준)"></td>
+      <td>${dis?"":`<button class="ghost small" data-act="oc-del" data-o="${o.id}" data-i="${i}" aria-label="항목 삭제">삭제</button>`}</td></tr>`;
+  };
+  return `<tr class="plan-row"><td colspan="3"><div class="plan-wrap">
+    <div class="plan-block">
+      <div class="plan-head"><h3>${esc(o.name)} 비용 항목</h3><span class="small muted">항목 금액을 넣으면 합계가 비용 예산으로 들어갑니다</span></div>
+      <div class="tbl-wrap"><table class="plan-tbl"><thead><tr><th class="l">항목</th><th>금액(원)</th><th class="l">메모</th><th></th></tr></thead><tbody>
+      ${L.map(line).join("") || `<tr><td colspan="4" class="muted small">항목이 없습니다.</td></tr>`}
+      <tr class="sub"><td><b>합계</b></td><td class="num"><b id="ocs-${o.id}">${nf.format(Math.round(sum))}</b></td><td></td><td></td></tr>
+      </tbody></table></div>
+      ${dis?"":`<div class="plan-actions"><button class="ghost small" data-act="oc-add" data-o="${o.id}">+ 항목 추가</button>${L.length?"":`<button class="ghost small" data-act="oc-defaults" data-o="${o.id}">기본 항목 넣기</button>`}${L.length?`<button class="ghost small danger" data-act="oc-clear" data-o="${o.id}">항목 지우기</button>`:""}</div>`}
+    </div>
+  </div></td></tr>`;
+}
 /* ---------- 기타수익 (임대·이자·지원금 등) ---------- */
 const OI_DEFAULTS = ["임대수익","이자수익","지원금수익"];
 function oiOf(p){
@@ -681,11 +718,15 @@ function planView(){
 
   // overhead budgets
   h+=oiPanel(p,"plan",!canWrite);
-  h+=`<section class="panel"><div class="panel-head"><h2>공통비 부서 비용 예산</h2><span class="small muted">성과급 대상 아님 · 전사 영업이익에서 차감</span></div>
+  h+=`<section class="panel"><div class="panel-head"><h2>공통비 부서 비용 예산</h2><span class="small muted">성과급 대상 아님 · 전사 영업이익에서 차감 · 부서 이름을 누르면 비용 항목별로 넣을 수 있습니다</span></div>
   <div class="tbl-wrap"><table><thead><tr><th class="l">부서</th><th>비용 예산</th><th>팀 영업이익 대비</th></tr></thead><tbody>`;
-  ohs.forEach(o=>{ h+=`<tr><td><div class="team-name">${esc(o.name)} <span class="pill example">성과급 제외</span></div><div class="team-meta">${o.id==="common"?"운영비 등 해당 기간 총비용":"인건비·운영비 등 해당 기간 총비용"}</div></td>
-      <td>${input("cb-"+o.id, C[o.id], {disabled:dis,key:`c|${o.id}`,label:o.name+" 비용 예산",ph:"0"})}</td>
-      <td class="num">${base.tgTeamP?pct((C[o.id]||0)/base.tgTeamP*100):"–"}</td></tr>`; });
+  const CI=costItemsFor(p);
+  ohs.forEach(o=>{ const items=CI[o.id]||[]; const itemsOn=ohItemsActive(items); const open=!!openOh[o.id];
+    const meta = itemsOn ? `항목 ${items.length}개 합계` : (o.id==="common"?"운영비 등 해당 기간 총비용":"인건비·운영비 등 해당 기간 총비용");
+    h+=`<tr class="${open?"plan-open":""}"><td><button class="team-toggle" data-act="oh-toggle" data-o="${o.id}" aria-expanded="${open}"><span class="chev">${open?"▾":"▸"}</span><span><span class="team-name">${esc(o.name)} <span class="pill example">성과급 제외</span></span><span class="team-meta">${meta}</span></span></button></td>
+      <td>${input("cb-"+o.id, C[o.id], {disabled:dis||itemsOn,key:`c|${o.id}`,label:o.name+" 비용 예산",ph:"0"})}</td>
+      <td class="num" id="cbr-${o.id}">${base.tgTeamP?pct((C[o.id]||0)/base.tgTeamP*100):"–"}</td></tr>`;
+    if(open) h+=ohItemRow(o, items, dis); });
   if(!ohs.length) h+=`<tr><td colspan="3" class="muted">공통비 부서가 없습니다. 산정 기준 탭에서 추가할 수 있습니다.</td></tr>`;
   h+=`<tr class="total"><td>공통비 합계</td><td class="num">${nf.format(base.tgCost)}</td><td class="num">${base.tgTeamP?pct(base.tgCost/base.tgTeamP*100):"–"}</td></tr></tbody></table></div>
   <h3>전사 손익 목표</h3>${bridge(base,"100% 달성 시")}`;
@@ -1177,6 +1218,16 @@ document.addEventListener("input", e=>{
       if(f2==="target" && !draft) return;
       it[f2]=v; queueSave(currentId); render(); return;
     }
+    if(kind==="oc" && draft){
+      const [, oid, idx, f2] = el.dataset.k.split("|");
+      p.costItems=p.costItems||{}; const it=(p.costItems[oid]||[])[+idx]; if(!it) return;
+      if(f2==="name"||f2==="memo"){ it[f2]=el.value; queueSave(currentId); return; }
+      it.amt=v; applyOhItems(p, oid); queueSave(currentId);
+      const L=p.costItems[oid]; const s=document.getElementById("ocs-"+oid); if(s) s.textContent=nf.format(Math.round(ohItemSum(L)));
+      const cb=document.getElementById("cb-"+oid); if(cb){ cb.value=fmtInput(p.costs[oid]); cb.disabled=ohItemsActive(L)||cb.disabled; }
+      return;
+    }
+    if(kind==="oc") return;
     if(kind==="pl" && draft){
       const [, tid, pk, idx, pf] = el.dataset.k.split("|");
       p.targets=p.targets||{}; const tg=p.targets[tid]=p.targets[tid]||{};
@@ -1220,10 +1271,11 @@ document.addEventListener("input", e=>{
     else m[f]=el.value;
     queueSave("config"); if(f==="share") render(); return; }
 });
-document.addEventListener("focusout", e=>{ const el=e.target; if(!el.dataset) return; if(el.dataset.k && !/\|(margin|rate|name)$/.test(el.dataset.k)){ el.value=fmtInput(parseNum(el.value)); } if(el.dataset.team||el.dataset.mem||el.dataset.oh) render(); });
+document.addEventListener("focusout", e=>{ const el=e.target; if(!el.dataset) return; if(el.dataset.k && !/\|(margin|rate|name|memo)$/.test(el.dataset.k)){ el.value=fmtInput(parseNum(el.value)); } if(el.dataset.team||el.dataset.mem||el.dataset.oh) render(); });
 document.addEventListener("change", e=>{
   const el=e.target;
   if(el.dataset && (/^t\|.*\|margin$/.test(el.dataset.k||"") || /^pl\|/.test(el.dataset.k||""))){ render(); return; }
+  if(el.dataset && /^oc\|/.test(el.dataset.k||"")){ setTimeout(softRender,0); return; }
   if(el.id==="psel"){ currentId=el.value; pendingConfirm=null; render(); }
   if(el.id==="ysel"){ yearSel=+el.value; render(); }
   if(el.id==="np-type"){ const n=document.getElementById("np-n"); const t=el.value;
@@ -1234,6 +1286,7 @@ document.addEventListener("click", e=>{
   const b=e.target.closest("[data-act]"); if(!b) return;
   const act=b.dataset.act; const p=cur();
   if(act==="toggle-new"){ showNew=!showNew; render(); return; }
+  if(act==="oh-toggle"){ const id=b.dataset.o; openOh[id]=!openOh[id]; render(); return; }
   if(act==="plan-toggle"){ const id=b.dataset.t; openPlan[id]=!openPlan[id]; render(); return; }
   if(act==="toggle-export"){ showExport=!showExport; exportMsg=""; showNew=false; render(); return; }
   if(act==="export-one"){ exportXlsx("one"); return; }
@@ -1260,6 +1313,14 @@ document.addEventListener("click", e=>{
     if(act==="plan-clear"){ delete tg.plan; }
     queueSave(currentId); render(); return;
   }
+  if(act.startsWith("oc-") && p && p.status!=="confirmed"){
+    const oid=b.dataset.o; p.costItems=p.costItems||{}; const L=p.costItems[oid]=p.costItems[oid]||[];
+    if(act==="oc-add") L.push({name:"",amt:null});
+    if(act==="oc-del") L.splice(+b.dataset.i,1);
+    if(act==="oc-defaults"){ p.costItems[oid]=(OH_ITEM_DEFAULTS[oid]||OH_ITEM_DEFAULTS._).map(n=>({name:n,amt:null})); }
+    if(act==="oc-clear") delete p.costItems[oid];
+    applyOhItems(p, oid); queueSave(currentId); render(); return;
+  }
   if(act==="oi-add" && p){ p.other=p.other||[]; p.other.push({name:"",target:null,actual:null}); queueSave(currentId); render(); return; }
   if(act==="oi-defaults" && p){ p.other=OI_DEFAULTS.map(n=>({name:n,target:null,actual:null})); queueSave(currentId); render(); return; }
   if(act==="oi-del" && p){ (p.other||[]).splice(+b.dataset.i,1); queueSave(currentId); render(); return; }
@@ -1269,11 +1330,11 @@ document.addEventListener("click", e=>{
   if(act==="cancel-ask"){ pendingConfirm=null; render(); return; }
   if(act==="do-confirm" && p){
     p.status="confirmed";
-    p.confirmed={at:new Date().toISOString(), targets:clone(p.targets||{}), costs:clone(p.costs||{}), rule:clone(config.rule), teams:clone(config.teams), overheads:clone(config.overheads)};
+    p.confirmed={at:new Date().toISOString(), targets:clone(p.targets||{}), costs:clone(p.costs||{}), costItems:clone(p.costItems||{}), rule:clone(config.rule), teams:clone(config.teams), overheads:clone(config.overheads)};
     pendingConfirm=null; queueSave(currentId); render(); return;
   }
   if(act==="do-unlock" && p){
-    p.targets = clone(p.confirmed?.targets||p.targets||{}); p.costs = clone(p.confirmed?.costs||p.costs||{});
+    p.targets = clone(p.confirmed?.targets||p.targets||{}); p.costs = clone(p.confirmed?.costs||p.costs||{}); if(p.confirmed?.costItems) p.costItems = clone(p.confirmed.costItems);
     p.status="draft"; p.lastConfirmed=p.confirmed; delete p.confirmed;
     pendingConfirm=null; queueSave(currentId); render(); return;
   }
