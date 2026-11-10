@@ -501,11 +501,9 @@ function refreshPlanNumbers(tid){
     if(a && document.activeElement!==a) a.value = x.amt==null?"":fmtInput(Math.round(x.amt));
     if(r && document.activeElement!==r) r.value = x.rate==null?"":String(Math.round(x.rate*100)/100); });
 }
-/* 공통비 인원 배분: 같은 이름이 여러 팀에 있으면 팀 수만큼 나눠 반영 (예: 바이럴·커머스 겸직 → 0.5명씩) */
+/* 공통비 인원 배분: 팀별 배분 인원(겸직자는 0.5 등)을 직접 입력, 비어 있으면 소속 인원 */
 function ohHeads(teams){
-  const key=m=>String(m.name||"").trim();
-  const cnt={}; teams.forEach(t=>t.members.forEach(m=>{ const k=key(m); if(k) cnt[k]=(cnt[k]||0)+1; }));
-  const w={}; teams.forEach(t=>{ w[t.id]=t.members.reduce((s,m)=>{ const k=key(m); return s+(k&&cnt[k]>1?1/cnt[k]:1); },0); });
+  const w={}; teams.forEach(t=>{ w[t.id]= t.ohHeads!=null ? Number(t.ohHeads) : t.members.length; });
   const total=Object.values(w).reduce((a,b)=>a+b,0);
   return {w,total};
 }
@@ -714,8 +712,8 @@ function planView(){
   </div>`;
 
   // team targets
-  h+=`<section class="panel"><div class="panel-head"><h2>성과급 대상 팀 목표</h2><span class="small muted">단위: 원 · 팀 이름을 누르면 변동비·고정비 지출 계획을 넣을 수 있습니다 · 공통비 배분 = 공통비 합계 ÷ 인원 × 팀 인원 (겸직자는 팀 수만큼 나눠 반영)</span></div>
-  <div class="tbl-wrap"><table><thead><tr><th class="l">팀</th><th>목표 매출</th><th>목표 이익률</th><th>목표 팀 영업이익</th><th>인원</th><th>공통비 배분</th><th>공통비 포함 이익</th><th>공통비 포함 이익률</th></tr></thead><tbody>`;
+  h+=`<section class="panel"><div class="panel-head"><h2>성과급 대상 팀 목표</h2><span class="small muted">단위: 원 · 팀 이름을 누르면 변동비·고정비 지출 계획을 넣을 수 있습니다 · 공통비 배분 = 공통비 합계 ÷ 배분 인원 합계 × 팀 배분 인원 · 겸직자는 배분 인원에 0.5처럼 나눠 입력</span></div>
+  <div class="tbl-wrap"><table><thead><tr><th class="l">팀</th><th>목표 매출</th><th>목표 이익률</th><th>목표 팀 영업이익</th><th>배분 인원</th><th>공통비 배분</th><th>공통비 포함 이익</th><th>공통비 포함 이익률</th></tr></thead><tbody>`;
   const HD=ohHeads(teams); const perHead=HD.total? base.tgCost/HD.total : 0;
   let sumAfter=0;
   teams.forEach(t=>{ const tg=T[t.id]||{}; const pc=planCalc(tg, t.id); const planOn=!!(pc&&pc.active); const open=!!openPlan[t.id];
@@ -723,7 +721,7 @@ function planView(){
       <td>${input("tg-rev-"+t.id, tg.rev, {disabled:dis,key:`t|${t.id}|rev`,label:t.name+" 목표 매출",ph:"0"})}</td>
       <td>${marginInput(t, tg, dis||planOn)}</td>
       <td>${input("tg-pf-"+t.id, tg.profit, {disabled:dis||planOn,key:`t|${t.id}|profit`,label:t.name+" 목표 영업이익",ph:"0"})}</td>
-      <td class="num">${hc(HD.w[t.id])}${HD.w[t.id]!==t.members.length?`<div class="team-meta">소속 ${t.members.length}명</div>`:""}</td>`;
+      <td><div class="pct-in"><input type="text" inputmode="decimal" class="cell" style="min-width:56px;width:64px" id="hd-${t.id}" data-k="h|${t.id}|heads" value="${t.ohHeads!=null?esc(String(t.ohHeads)):""}" placeholder="${t.members.length}" ${dis?"disabled":""} aria-label="${esc(t.name)} 공통비 배분 인원"><span>명</span></div>${HD.w[t.id]!==t.members.length?`<div class="team-meta">소속 ${t.members.length}명</div>`:""}</td>`;
     const alloc=perHead*HD.w[t.id], after=(Number(tg.profit)||0)-alloc; sumAfter+=after;
     h+=`<td class="num">${nf.format(Math.round(alloc))}</td>
       <td class="num" style="${after<0?"color:var(--bad)":""}">${nf.format(Math.round(after))}</td>
@@ -1233,6 +1231,8 @@ document.addEventListener("input", e=>{
       if(f2==="target" && !draft) return;
       it[f2]=v; queueSave(currentId); render(); return;
     }
+    if(kind==="h"){ const t=config.teams.find(x=>x.id===id); if(!t || !draft) return;
+      if(v==null) delete t.ohHeads; else t.ohHeads=v; queueSave("config"); return; }
     if(kind==="oc" && draft){
       const [, oid, idx, f2] = el.dataset.k.split("|");
       p.costItems=p.costItems||{}; const it=(p.costItems[oid]||[])[+idx]; if(!it) return;
@@ -1286,11 +1286,11 @@ document.addEventListener("input", e=>{
     else m[f]=el.value;
     queueSave("config"); if(f==="share") render(); return; }
 });
-document.addEventListener("focusout", e=>{ const el=e.target; if(!el.dataset) return; if(el.dataset.k && !/\|(margin|rate|name|memo)$/.test(el.dataset.k)){ el.value=fmtInput(parseNum(el.value)); } if(el.dataset.team||el.dataset.mem||el.dataset.oh) render(); });
+document.addEventListener("focusout", e=>{ const el=e.target; if(!el.dataset) return; if(el.dataset.k && !/\|(margin|rate|name|memo|heads)$/.test(el.dataset.k)){ el.value=fmtInput(parseNum(el.value)); } if(el.dataset.team||el.dataset.mem||el.dataset.oh) render(); });
 document.addEventListener("change", e=>{
   const el=e.target;
   if(el.dataset && (/^t\|.*\|margin$/.test(el.dataset.k||"") || /^pl\|/.test(el.dataset.k||""))){ render(); return; }
-  if(el.dataset && /^oc\|/.test(el.dataset.k||"")){ setTimeout(softRender,0); return; }
+  if(el.dataset && /^(oc|h)\|/.test(el.dataset.k||"")){ setTimeout(softRender,0); return; }
   if(el.id==="psel"){ currentId=el.value; pendingConfirm=null; render(); }
   if(el.id==="ysel"){ yearSel=+el.value; render(); }
   if(el.id==="np-type"){ const n=document.getElementById("np-n"); const t=el.value;
