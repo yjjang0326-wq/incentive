@@ -159,6 +159,7 @@ tr.plan-row > td{background:var(--sunk)!important;padding:14px;white-space:norma
 .plan-actions{display:flex;gap:8px;flex-wrap:wrap}
 .chk{display:flex;gap:8px;align-items:center;font-size:14px;color:var(--ink-2)}
 .chk input{width:18px;height:18px;accent-color:var(--accent)}
+.auto-row td{background:color-mix(in srgb,var(--accent-soft) 50%,var(--surface))}
 .chart-wrap{overflow-x:auto;border:1px solid var(--line-soft);border-radius:10px;padding:10px 8px 2px;background:var(--surface)}
 .legend{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--ink-2)}
 .legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
@@ -341,10 +342,14 @@ function simCompany(rule, teams, ohs, T, C, s, cs, OI){
   ohs.forEach(o=>{ CA[o.id]=(C[o.id]||0)*cs/100; });
   return calcCompany(rule, teams, ohs, T, A, C, CA, null, OI? {tg:OI.tg, ac:OI.tg} : null);
 }
-function split(team, pool){
-  const tot = team.members.reduce((s,m)=>s+(Number(m.share)||0),0) || 1;
-  return team.members.map(m=>({...m, amt: pool*(Number(m.share)||0)/tot}));
+const isFixed = m => (Number(m.fixRate)||0) > 0;
+function fixedAmt(m, rev){ if(!isFixed(m) || rev==null) return 0; return Math.max(0, (Number(rev)||0)*Number(m.fixRate)/100 - (Number(m.fixBase)||0)); }
+function fixedLabel(m){ return `고정 인센티브 · 매출×${m.fixRate}% − ${nf.format(Number(m.fixBase)||0)}`; }
+function split(team, pool, rev){
+  const tot = team.members.filter(m=>!isFixed(m)).reduce((s,m)=>s+(Number(m.share)||0),0) || 1;
+  return team.members.map(m=> isFixed(m) ? {...m, isFixed:true, amt: fixedAmt(m, rev)} : {...m, amt: pool*(Number(m.share)||0)/tot});
 }
+function teamFixedCost(team, rev){ return (team&&team.members||[]).reduce((s,m)=>s+fixedAmt(m,rev),0); }
 function rateClass(r){ if(r==null) return ""; return r>=100?"good":(r>=80?"warn":"bad"); }
 function costClass(r){ if(r==null) return ""; return r<=100?"good":(r<=110?"warn":"bad"); }
 
@@ -429,25 +434,33 @@ const PLAN_DEFAULTS = {
   var: ["외주비","발행비(블로그·프리랜서)","원고비","광고선전비","지급수수료"],
   fix: ["인건비","4대보험(회사분)","퇴직연금","복리후생비","공동경비 배분(임차료 등)"]
 };
-function planCalc(tg){
-  const p=tg.plan; if(!p) return null;
+function teamById(tid){ const p=cur(); return (p? teamsFor(p) : config.teams).find(t=>t.id===tid); }
+function planCalc(tg, tid){
+  const team = tid? teamById(tid) : null;
+  const autos = team ? team.members.filter(isFixed) : [];
+  if(!tg.plan && !autos.length) return null;
+  const p=tg.plan||{var:[],fix:[]};
   const rev=Number(tg.rev)||0;
   const v=(p.var||[]).map(x=>({...x, amt: x.rate!=null ? rev*x.rate/100 : null}));
+  autos.forEach(m=>{ const a=fixedAmt(m, rev); v.push({name:`${m.name} ${fixedLabel(m)}`, amt:a, rate: rev? a/rev*100 : null, auto:true}); });
   const f=(p.fix||[]).map(x=>({...x, rate: rev && x.amt!=null ? x.amt/rev*100 : null}));
   const vs=v.reduce((s,x)=>s+(x.amt||0),0), fs=f.reduce((s,x)=>s+(Number(x.amt)||0),0);
   const vr=v.reduce((s,x)=>s+(Number(x.rate)||0),0);
   const active = v.some(x=>x.rate) || f.some(x=>x.amt);
-  return {v,f,vs,fs,vr, fr: rev? fs/rev*100 : null, profit: rev-vs-fs, margin: rev? (rev-vs-fs)/rev*100 : null, active, rev};
+  // 자동 항목(고정 인센티브)만 있고 직접 입력한 계획이 없으면 목표 칸은 잠그지 않음
+  const manual = (p.var||[]).some(x=>x.rate) || (p.fix||[]).some(x=>x.amt);
+  return {v,f,vs,fs,vr, fr: rev? fs/rev*100 : null, profit: rev-vs-fs, margin: rev? (rev-vs-fs)/rev*100 : null, active: manual, rev, hasAuto: autos.length>0};
 }
-function applyPlan(tg){
-  const c=planCalc(tg);
+function applyPlan(tg, tid){
+  const c=planCalc(tg, tid);
   if(c && c.active){ tg.profit=Math.round(c.profit); delete tg.margin; }
 }
 const pctTxt = v => v==null||!isFinite(v) ? "–" : (Math.round(v*100)/100)+"%";
 function planRow(t, tg, dis){
-  const c=planCalc(tg) || {v:[],f:[],vs:0,fs:0,vr:0,fr:null,profit:(tg.rev||0),margin:tg.rev?100:null,active:false,rev:tg.rev||0};
+  const c=planCalc(tg, t.id) || {v:[],f:[],vs:0,fs:0,vr:0,fr:null,profit:(tg.rev||0),margin:tg.rev?100:null,active:false,rev:tg.rev||0};
   const noRev=!(tg.rev>0);
   const line=(kind,x,i)=>{
+    if(x.auto) return `<tr class="auto-row"><td><span class="small">${esc(x.name)}</span><div class="team-meta">자동 계산 · 팀 성과급에서 제외된 고정 인센티브</div></td><td class="num">${nf.format(Math.round(x.amt||0))}</td><td class="num">${pctTxt(x.rate)}</td><td></td></tr>`;
     const base=`pl|${t.id}|${kind}|${i}`;
     const nameIn=`<input type="text" class="cell name" id="pn-${t.id}-${kind}-${i}" data-k="${base}|name" value="${esc(x.name||"")}" ${dis?"disabled":""} aria-label="항목명" placeholder="항목명">`;
     const amtIn=`<input type="text" inputmode="numeric" class="cell" id="pa-${t.id}-${kind}-${i}" data-k="${base}|amt" value="${x.amt==null?"":esc(fmtInput(Math.round(x.amt)))}" ${dis||(kind==="var"&&noRev)?"disabled":""} aria-label="${esc(x.name||"항목")} 금액" placeholder="${kind==="var"&&noRev?"매출 먼저":"0"}">`;
@@ -481,7 +494,7 @@ function planRow(t, tg, dis){
 }
 
 function refreshPlanNumbers(tid){
-  const p=cur(); if(!p) return; const tg=(p.targets||{})[tid]||{}; const c=planCalc(tg); if(!c) return;
+  const p=cur(); if(!p) return; const tg=(p.targets||{})[tid]||{}; const c=planCalc(tg, tid); if(!c) return;
   const pf=document.getElementById("tg-pf-"+tid); if(pf) pf.value=fmtInput(tg.profit);
   const mg=document.getElementById("tg-mg-"+tid); if(mg) mg.value = c.margin==null?"":String(Math.round(c.margin*10)/10);
   c.v.forEach((x,i)=>{ const a=document.getElementById(`pa-${tid}-var-${i}`), r=document.getElementById(`pr-${tid}-var-${i}`);
@@ -538,7 +551,8 @@ function ruleText(rule){
   const co = rule.coMode==="gate" ? `전사 영업이익(팀 영업이익 합계 − 공통비 부서 비용 + 기타수익) 달성률 <b>${rule.coGate}% 미만이면 전원 미지급</b>`
     : rule.coMode==="scale" ? `전사 영업이익 달성률이 100% 미만이면 <b>그 비율만큼 전원 성과급 축소</b>`
     : `전사 영업이익 달성률은 지급 조건으로 쓰지 않음`;
-  return `${main}<br>${w}<br>팀 상한: 팀 영업이익의 ${rule.capRate}% · 팀 영업이익이 0 이하이면 미지급<br>전사 조건: ${co} · 성과급 총액은 전사 영업이익의 ${rule.coCapRate}% 이내 · 전사 적자면 전원 미지급`;
+  const fx=(config.teams||[]).flatMap(t=>t.members.filter(isFixed).map(m=>`${t.name} ${m.name}(${m.role})`));
+  return `${main}<br>${w}${fx.length?`<br>고정 인센티브 대상(팀 성과급 배분 제외, 팀 변동비로 반영): ${fx.join(", ")} — 매출×비율 − 기본급, 0원 미만이면 0원`:""}<br>팀 상한: 팀 영업이익의 ${rule.capRate}% · 팀 영업이익이 0 이하이면 미지급<br>전사 조건: ${co} · 성과급 총액은 전사 영업이익의 ${rule.coCapRate}% 이내 · 전사 적자면 전원 미지급`;
 }
 
 /* ---------- render ---------- */
@@ -656,7 +670,7 @@ function planView(){
   // team targets
   h+=`<section class="panel"><div class="panel-head"><h2>성과급 대상 팀 목표</h2><span class="small muted">단위: 원 · 팀 이름을 누르면 변동비·고정비 지출 계획을 넣을 수 있습니다 · 팀 영업이익은 공동경비(임차료 등) 배분 후 금액</span></div>
   <div class="tbl-wrap"><table><thead><tr><th class="l">팀</th><th>목표 매출</th><th>목표 이익률</th><th>목표 팀 영업이익</th><th>인원</th></tr></thead><tbody>`;
-  teams.forEach(t=>{ const tg=T[t.id]||{}; const pc=planCalc(tg); const planOn=!!(pc&&pc.active); const open=!!openPlan[t.id];
+  teams.forEach(t=>{ const tg=T[t.id]||{}; const pc=planCalc(tg, t.id); const planOn=!!(pc&&pc.active); const open=!!openPlan[t.id];
     h+=`<tr class="${open?"plan-open":""}"><td><button class="team-toggle" data-act="plan-toggle" data-t="${t.id}" aria-expanded="${open}"><span class="chev">${open?"▾":"▸"}</span><span><span class="team-name">${esc(t.name)}</span><span class="team-meta">${planOn?"지출 계획 기준":"상세 지출 계획"} · ${t.members.length}명</span></span></button></td>
       <td>${input("tg-rev-"+t.id, tg.rev, {disabled:dis,key:`t|${t.id}|rev`,label:t.name+" 목표 매출",ph:"0"})}</td>
       <td>${marginInput(t, tg, dis||planOn)}</td>
@@ -709,8 +723,8 @@ function planView(){
     <div class="slider"><label for="simc" class="small muted" style="min-width:110px">공통비 집행률</label><input type="range" id="simc" min="70" max="150" step="5" value="${simCost}"><span class="big">${simCost}%</span></div>
     ${sim.notes.length?`<div class="notice warn"><span>${sim.notes.map(esc).join(" · ")}</span></div>`:""}
     <div class="people">`;
-  sim.rows.forEach(x=>{ split(x.t,x.pool).forEach(m=>{
-    h+=`<div class="person"><div class="who"><span>${esc(x.t.name)}</span><span>${esc(m.role)} · ${m.share}%</span></div>
+  sim.rows.forEach(x=>{ split(x.t,x.pool,x.ac.rev).forEach(m=>{
+    h+=`<div class="person"><div class="who"><span>${esc(x.t.name)}</span><span>${esc(m.role)} · ${m.isFixed?"고정 인센티브":m.share+"%"}</span></div>
       <div class="team-name">${esc(m.name)}</div><div class="amt">${ready?won(m.amt):"–"}</div></div>`; }); });
   h+=`</div><div class="formula">${ruleText(rule)}</div></section>`;
   return h;
@@ -785,8 +799,8 @@ function actualView(){
     h+=`<section class="panel"><div class="panel-head"><h2>개인별 지급액${co.complete?"":" (잠정)"}</h2><span class="small muted">팀 성과급 × 개인 배분 비율 · 세전 · 공통비 부서는 지급 대상 아님</span></div>
     <div class="tbl-wrap"><table><thead><tr><th class="l">팀</th><th class="l">이름</th><th class="l">직책</th><th>배분 비율</th><th>지급액</th></tr></thead><tbody>`;
     let tot=0;
-    co.rows.forEach(({t,r,pool})=>{ split(t,pool).forEach((m,i)=>{ tot+=m.amt;
-      h+=`<tr><td>${i===0?`<span class="team-name">${esc(t.name)}</span>`:""}</td><td class="l">${esc(m.name)}</td><td class="l">${esc(m.role)}</td><td class="num">${m.share}%</td><td class="num"><b>${r.score==null?"–":won(m.amt)}</b></td></tr>`; }); });
+    co.rows.forEach(({t,r,pool,ac})=>{ split(t,pool,ac.rev).forEach((m,i)=>{ tot+=m.amt;
+      h+=`<tr><td>${i===0?`<span class="team-name">${esc(t.name)}</span>`:""}</td><td class="l">${esc(m.name)}</td><td class="l">${esc(m.role)}</td><td class="num">${m.isFixed?`<span class="small">${esc(fixedLabel(m))}</span>`:m.share+"%"}</td><td class="num"><b>${m.isFixed?(ac.rev==null?"–":won(m.amt)):(r.score==null?"–":won(m.amt))}</b></td></tr>`; }); });
     h+=`<tr class="total"><td>합계</td><td></td><td></td><td></td><td class="num">${won(tot)}</td></tr></tbody></table></div>
     <div class="formula">${ruleText(rule)}</div></section>`;
   }
@@ -843,15 +857,17 @@ function ruleView(){
   h+=`</tbody></table></div>${dis?"":`<div><button data-act="oh-add">+ 공통비 부서 추가</button></div>`}</section>`;
 
   h+=`<section class="panel"><div class="panel-head"><h2>성과급 대상 팀과 개인 배분 비율</h2><span class="small muted">팀 성과급을 팀원끼리 나누는 비율</span></div>
-    <div class="tbl-wrap"><table><thead><tr><th class="l">팀</th><th class="l">이름</th><th class="l">직책</th><th>배분 비율</th></tr></thead><tbody>`;
+    <div class="tbl-wrap"><table><thead><tr><th class="l">팀</th><th class="l">이름</th><th class="l">직책</th><th>팀 성과급 배분</th><th>고정 인센티브 (있는 사람만)</th></tr></thead><tbody>`;
   config.teams.forEach((t,ti)=>{
     const tot=t.members.reduce((s,m)=>s+(Number(m.share)||0),0);
     t.members.forEach((m,mi)=>{
       h+=`<tr><td>${mi===0?`<input type="text" class="cell name" id="tn-${ti}" data-team="${ti}" value="${esc(t.name)}" ${dis?"disabled":""} aria-label="팀 이름">`:""}</td>
       <td><input type="text" class="cell name" id="mn-${ti}-${mi}" data-mem="${ti}|${mi}|name" value="${esc(m.name)}" ${dis?"disabled":""} aria-label="이름"></td>
       <td><input type="text" class="cell name" id="mr-${ti}-${mi}" data-mem="${ti}|${mi}|role" value="${esc(m.role)}" ${dis?"disabled":""} aria-label="직책"></td>
-      <td><div class="inline" style="justify-content:flex-end"><input type="text" id="ms-${ti}-${mi}" data-mem="${ti}|${mi}|share" value="${m.share}" ${dis?"disabled":""} aria-label="배분 비율"><span>%</span></div></td></tr>`; });
-    h+=`<tr class="sub"><td></td><td colspan="2">${tot===100?"합계 100%":`<span style="color:var(--warn)">합계 ${tot}% — 비율대로 환산해 나눕니다</span>`}</td><td></td></tr>`;
+      <td><div class="inline" style="justify-content:flex-end"><input type="text" id="ms-${ti}-${mi}" data-mem="${ti}|${mi}|share" value="${isFixed(m)?"":m.share}" ${dis||isFixed(m)?"disabled":""} aria-label="배분 비율" placeholder="${isFixed(m)?"제외":""}"><span>%</span></div></td>
+      <td><div class="inline" style="justify-content:flex-end"><span class="small muted">매출×</span><input type="text" inputmode="decimal" id="mf-${ti}-${mi}" data-mem="${ti}|${mi}|fixRate" value="${m.fixRate??""}" ${dis?"disabled":""} aria-label="고정 인센티브 매출 비율" placeholder="없음" style="width:64px"><span>% −</span><input type="text" inputmode="numeric" id="mb-${ti}-${mi}" data-mem="${ti}|${mi}|fixBase" value="${m.fixBase!=null?fmtInput(m.fixBase):""}" ${dis?"disabled":""} aria-label="차감 기본급" placeholder="기본급" style="width:110px"></div></td></tr>`; });
+    const tot2=t.members.filter(m=>!isFixed(m)).reduce((s,m)=>s+(Number(m.share)||0),0);
+    h+=`<tr class="sub"><td></td><td colspan="2">${tot2===100?"성과급 배분 합계 100%":`<span style="color:var(--warn)">성과급 배분 합계 ${tot2}% — 비율대로 환산해 나눕니다</span>`}${t.members.some(isFixed)?" · 고정 인센티브 대상자는 팀 성과급 배분에서 제외":""}</td><td></td><td></td></tr>`;
   });
   h+=`</tbody></table></div><p class="small muted" style="margin:0">이름을 실제 직원 이름으로 바꿔 두면 지급 내역에 그대로 표시됩니다. 확정된 기간에는 확정 당시 이름과 비율이 유지됩니다.</p></section>`;
   return h;
@@ -905,7 +921,7 @@ const OH_HEAD=["기간","부서","비용 예산(원)","실제 순비용(원)","�
 const OH_FMT=["","","n","n","p","n",""];
 function personRows(d){
   if(!d.payable) return [];
-  const out=[]; d.co.rows.forEach(x=>{ split(x.t,x.pool).forEach(m=>out.push([d.p.label,x.t.name,m.name,m.role,(Number(m.share)||0)/100,Math.floor(m.amt),d.kind])); });
+  const out=[]; d.co.rows.forEach(x=>{ split(x.t,x.pool,x.ac.rev).forEach(m=>out.push([d.p.label,x.t.name,m.name,m.isFixed?m.role+" (고정 인센티브)":m.role,m.isFixed?null:(Number(m.share)||0)/100,Math.floor(m.amt),d.kind])); });
   return out;
 }
 const PER_HEAD=["기간","팀","이름","직책","배분 비율","지급액(원, 세전)","구분"];
@@ -1070,14 +1086,14 @@ function yearTeam(months, team){
     const r=rowOf(x);
     if(!r){ h+=`<tr><td class="team-name">${x.m}월</td><td class="l">${statusPill(x)}</td>${`<td>${dash}</td>`.repeat(8+mems.length)}<td>${openBtn(x)}</td></tr>`; return; }
     const has=x.d.showAct&&r.ac.rev!=null&&r.ac.profit!=null, pay=x.d.confirmed&&has;
-    const ps = pay? split(r.t, r.pool) : [];
-    if(pay && x.d.co.complete) mems.forEach((m,i)=>{ memTot[i]+= (ps[i]?.amt||0); });
+    const ps = has? split(r.t, pay? r.pool : 0, r.ac.rev) : [];
+    if(has) mems.forEach((m,i)=>{ if(ps[i]?.isFixed || (pay && x.d.co.complete)) memTot[i]+= (ps[i]?.amt||0); });
     const st = !has||r.r.score==null? dash : (!x.d.confirmed? `<span class="pill example">${pct(r.r.score)}</span>` : r.pool>0? `<span class="pill ${rateClass(r.r.score)}">${pct(r.r.score)}</span>` : `<span class="pill bad">${pct(r.r.score)} · 미지급</span>`);
     h+=`<tr><td class="team-name">${x.m}월</td><td class="l">${statusPill(x)}</td>
       <td class="num">${cellN(nz(r.tg.rev))}</td><td class="num">${has?cellN(r.ac.rev):dash}</td><td>${has&&r.tg.rev?rateCell(r.r.revRate):dash}</td>
       <td class="num">${cellN(nz(r.tg.profit))}</td><td class="num">${has?cellN(r.ac.profit):dash}</td><td>${has&&r.tg.profit?rateCell(r.r.profRate):dash}</td>
       <td>${st}</td><td class="num">${pay?`<b>${cellN(r.pool)}</b>${x.d.co.complete?"":`<div class="small muted">잠정</div>`}`:(has?`<span class="small muted">목표 확정 후</span>`:dash)}</td>
-      ${mems.map((m,i)=>`<td class="num">${pay?cellN((ps[i]?.amt||0)):dash}</td>`).join("")}<td>${openBtn(x)}</td></tr>`; });
+      ${mems.map((m,i)=>`<td class="num">${(pay||ps[i]?.isFixed)?cellN((ps[i]?.amt||0)):dash}</td>`).join("")}<td>${openBtn(x)}</td></tr>`; });
   h+=`<tr class="total"><td>누계</td><td class="l">${a.n}개월</td><td class="num">${a.tR?nf.format(a.tR):"–"}</td><td class="num">${nf.format(a.aR)}</td><td>${rateCell(rr(a.aR,a.tR))}</td><td class="num">${a.tP?nf.format(a.tP):"–"}</td><td class="num">${nf.format(a.aP)}</td><td>${rateCell(rr(a.aP,a.tP))}</td><td></td><td class="num">${nf.format(Math.round(a.pool))}</td>${memTot.map(v=>`<td class="num">${nf.format(Math.floor(v))}</td>`).join("")}<td></td></tr>`;
   h+=`</tbody></table></div><p class="small muted" style="margin:0">금액 단위: 원 · 팀 영업이익은 공통경비(임차료 등) 배분 후 금액입니다.</p>`;
   if(parts.length){
@@ -1124,8 +1140,8 @@ async function exportYear(){
     const parts=t.parts||[];
     const head=["월","상태","목표 매출(원)","실제 매출(원)","매출 달성률","목표 팀 영업이익(원)","실제 팀 영업이익(원)","영업이익 달성률","팀 성과급(원)",...t.members.map(m=>`${m.name}(원)`),...parts.flatMap(p=>[`${p.name} 매출(원)`,`${p.name} 영업이익(원)`])];
     const rows=months.map(x=>{ const r=x.d.co.rows.find(z=>z.t.id===t.id); if(!r) return [`${x.m}월`,st(x)];
-      const has=x.d.showAct&&r.ac.rev!=null&&r.ac.profit!=null, pay=x.d.confirmed&&has; const ps=pay?split(r.t,r.pool):[]; const P=(has&&r.ac.parts)||{};
-      return [`${x.m}월`, st(x), nz(r.tg.rev), has?r.ac.rev:null, has?R(r.ac.rev,r.tg.rev):null, nz(r.tg.profit), has?r.ac.profit:null, has?R(r.ac.profit,r.tg.profit):null, pay?Math.round(r.pool):null, ...t.members.map((m,i)=>pay?Math.floor((ps[i]?.amt||0)):null), ...parts.flatMap(p=>[P[p.id]?.rev??null, P[p.id]?.profit??null])]; });
+      const has=x.d.showAct&&r.ac.rev!=null&&r.ac.profit!=null, pay=x.d.confirmed&&has; const ps=has?split(r.t,pay?r.pool:0,r.ac.rev):[]; const P=(has&&r.ac.parts)||{};
+      return [`${x.m}월`, st(x), nz(r.tg.rev), has?r.ac.rev:null, has?R(r.ac.rev,r.tg.rev):null, nz(r.tg.profit), has?r.ac.profit:null, has?R(r.ac.profit,r.tg.profit):null, pay?Math.round(r.pool):null, ...t.members.map((m,i)=>(pay||ps[i]?.isFixed)?Math.floor((ps[i]?.amt||0)):null), ...parts.flatMap(p=>[P[p.id]?.rev??null, P[p.id]?.profit??null])]; });
     XLSX.utils.book_append_sheet(wb, sheet(head, rows, ["","","n","n","p","n","n","p","n",...t.members.map(()=>"n"),...parts.flatMap(()=>["n","n"])]), t.name.slice(0,31));
   });
   const ohs=config.overheads;
@@ -1166,11 +1182,11 @@ document.addEventListener("input", e=>{
       p.targets=p.targets||{}; const tg=p.targets[tid]=p.targets[tid]||{};
       tg.plan=tg.plan||{var:[],fix:[]}; const it=tg.plan[pk][+idx]; if(!it) return;
       if(pf==="name"){ it.name=el.value; queueSave(currentId); return; }
-      if(pf==="rate"){ it.rate=v; applyPlan(tg); queueSave(currentId); refreshPlanNumbers(tid); return; }
+      if(pf==="rate"){ it.rate=v; applyPlan(tg, tid); queueSave(currentId); refreshPlanNumbers(tid); return; }
       if(pf==="amt"){
         if(pk==="var"){ it.rate = (v!=null && tg.rev>0) ? v/tg.rev*100 : null; }
         else it.amt=v;
-        applyPlan(tg); queueSave(currentId); refreshPlanNumbers(tid); return;
+        applyPlan(tg, tid); queueSave(currentId); refreshPlanNumbers(tid); return;
       }
     }
     if(kind==="t" && draft){ p.targets=p.targets||{}; const tg=p.targets[id]=p.targets[id]||{};
@@ -1182,7 +1198,7 @@ document.addEventListener("input", e=>{
       }
       tg[field]=v;
       if(field==="rev" && tg.margin!=null && v!=null) tg.profit=Math.round(v*tg.margin/100);
-      if(field==="rev") applyPlan(tg);
+      if(field==="rev") applyPlan(tg, id);
       if(field==="profit") delete tg.margin;
       queueSave(currentId); }
     if(kind==="c" && draft){ p.costs=p.costs||{}; if(v==null) delete p.costs[id]; else p.costs[id]=v; queueSave(currentId); }
@@ -1197,7 +1213,12 @@ document.addEventListener("input", e=>{
   if(el.dataset.tier){ const [i,f]=el.dataset.tier.split("|"); config.rule.tiers[+i][f]=parseNum(el.value)??0; queueSave("config"); render(); return; }
   if(el.dataset.team){ config.teams[+el.dataset.team].name=el.value; queueSave("config"); return; }
   if(el.dataset.oh){ const [i,f]=el.dataset.oh.split("|"); config.overheads[+i][f]=el.value; queueSave("config"); return; }
-  if(el.dataset.mem){ const [ti,mi,f]=el.dataset.mem.split("|"); config.teams[+ti].members[+mi][f]= f==="share"? (parseNum(el.value)??0) : el.value; queueSave("config"); if(f==="share") render(); return; }
+  if(el.dataset.mem){ const [ti,mi,f]=el.dataset.mem.split("|"); const m=config.teams[+ti].members[+mi];
+    if(f==="share") m.share=parseNum(el.value)??0;
+    else if(f==="fixRate"||f==="fixBase"){ const v=parseNum(el.value); if(v==null||v===0) delete m[f]; else m[f]=v;
+      const p=cur(); if(p && p.status!=="confirmed"){ const tg=(p.targets||{})[config.teams[+ti].id]; if(tg){ applyPlan(tg, config.teams[+ti].id); queueSave(currentId); } } }
+    else m[f]=el.value;
+    queueSave("config"); if(f==="share") render(); return; }
 });
 document.addEventListener("focusout", e=>{ const el=e.target; if(!el.dataset) return; if(el.dataset.k && !/\|(margin|rate|name)$/.test(el.dataset.k)){ el.value=fmtInput(parseNum(el.value)); } if(el.dataset.team||el.dataset.mem||el.dataset.oh) render(); });
 document.addEventListener("change", e=>{
@@ -1234,7 +1255,7 @@ document.addEventListener("click", e=>{
   if(act.startsWith("plan-") && p && p.status!=="confirmed"){
     const tid=b.dataset.t; p.targets=p.targets||{}; const tg=p.targets[tid]=p.targets[tid]||{};
     if(act==="plan-add"){ tg.plan=tg.plan||{var:[],fix:[]}; tg.plan[b.dataset.kind].push(b.dataset.kind==="var"?{name:"",rate:null}:{name:"",amt:null}); }
-    if(act==="plan-del"){ tg.plan[b.dataset.kind].splice(+b.dataset.i,1); applyPlan(tg); }
+    if(act==="plan-del"){ tg.plan[b.dataset.kind].splice(+b.dataset.i,1); applyPlan(tg, tid); }
     if(act==="plan-defaults"){ tg.plan={var:PLAN_DEFAULTS.var.map(n=>({name:n,rate:null})), fix:PLAN_DEFAULTS.fix.map(n=>({name:n,amt:null}))}; }
     if(act==="plan-clear"){ delete tg.plan; }
     queueSave(currentId); render(); return;
