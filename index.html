@@ -719,16 +719,16 @@ function planView(){
   // overhead budgets
   h+=oiPanel(p,"plan",!canWrite);
   h+=`<section class="panel"><div class="panel-head"><h2>공통비 부서 비용 예산</h2><span class="small muted">성과급 대상 아님 · 전사 영업이익에서 차감 · 부서 이름을 누르면 비용 항목별로 넣을 수 있습니다</span></div>
-  <div class="tbl-wrap"><table><thead><tr><th class="l">부서</th><th>비용 예산</th><th>팀 영업이익 대비</th></tr></thead><tbody>`;
+  <div class="tbl-wrap"><table><thead><tr><th class="l">부서</th><th>비용 예산</th><th>팀 매출액 대비</th></tr></thead><tbody>`;
   const CI=costItemsFor(p);
   ohs.forEach(o=>{ const items=CI[o.id]||[]; const itemsOn=ohItemsActive(items); const open=!!openOh[o.id];
     const meta = itemsOn ? `항목 ${items.length}개 합계` : (o.id==="common"?"운영비 등 해당 기간 총비용":"인건비·운영비 등 해당 기간 총비용");
     h+=`<tr class="${open?"plan-open":""}"><td><button class="team-toggle" data-act="oh-toggle" data-o="${o.id}" aria-expanded="${open}"><span class="chev">${open?"▾":"▸"}</span><span><span class="team-name">${esc(o.name)} <span class="pill example">성과급 제외</span></span><span class="team-meta">${meta}</span></span></button></td>
       <td>${input("cb-"+o.id, C[o.id], {disabled:dis||itemsOn,key:`c|${o.id}`,label:o.name+" 비용 예산",ph:"0"})}</td>
-      <td class="num" id="cbr-${o.id}">${base.tgTeamP?pct((C[o.id]||0)/base.tgTeamP*100):"–"}</td></tr>`;
+      <td class="num" id="cbr-${o.id}">${base.tgRev?pct((C[o.id]||0)/base.tgRev*100):"–"}</td></tr>`;
     if(open) h+=ohItemRow(o, items, dis); });
   if(!ohs.length) h+=`<tr><td colspan="3" class="muted">공통비 부서가 없습니다. 산정 기준 탭에서 추가할 수 있습니다.</td></tr>`;
-  h+=`<tr class="total"><td>공통비 합계</td><td class="num">${nf.format(base.tgCost)}</td><td class="num">${base.tgTeamP?pct(base.tgCost/base.tgTeamP*100):"–"}</td></tr></tbody></table></div>
+  h+=`<tr class="total"><td>공통비 합계</td><td class="num">${nf.format(base.tgCost)}</td><td class="num">${base.tgRev?pct(base.tgCost/base.tgRev*100):"–"}</td></tr></tbody></table></div>
   <h3>전사 손익 목표</h3>${bridge(base,"100% 달성 시")}`;
   if(!locked && canWrite){
     const missing = teams.filter(t=>!(T[t.id]?.rev>0 && T[t.id]?.profit>0)).map(t=>t.name).concat(ohs.filter(o=>C[o.id]==null).map(o=>o.name+" 비용"));
