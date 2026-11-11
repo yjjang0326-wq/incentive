@@ -160,6 +160,16 @@ tr.plan-row > td{background:var(--sunk)!important;padding:14px;white-space:norma
 .chk{display:flex;gap:8px;align-items:center;font-size:14px;color:var(--ink-2)}
 .chk input{width:18px;height:18px;accent-color:var(--accent)}
 .auto-row td{background:color-mix(in srgb,var(--accent-soft) 50%,var(--surface))}
+.oc-name{display:flex;gap:6px;align-items:center}
+.oc-name input{flex:1}
+.sub-toggle{all:unset;cursor:pointer;font-size:12.5px;font-weight:600;color:var(--accent);white-space:nowrap;padding:2px 6px;border-radius:6px}
+.sub-toggle:hover{background:var(--accent-soft)}
+.sub-toggle.muted{color:var(--ink-3)}
+.sub-toggle:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent)}
+tr.sub-line td{background:color-mix(in srgb,var(--accent-soft) 40%,var(--surface))}
+tr.sub-line input.cell{font-size:13.5px}
+.sub-indent{padding-left:22px;position:relative;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.sub-indent::before{content:"";position:absolute;left:8px;top:-8px;width:8px;height:20px;border-left:1.5px solid var(--line);border-bottom:1.5px solid var(--line)}
 .chart-wrap{overflow-x:auto;border:1px solid var(--line-soft);border-radius:10px;padding:10px 8px 2px;background:var(--surface)}
 .legend{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--ink-2)}
 .legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
@@ -519,6 +529,11 @@ const OH_ITEM_DEFAULTS = {
 };
 function costItemsFor(p){ return isLocked(p) ? (p.confirmed.costItems||{}) : (p.costItems||{}); }
 function ohItemSum(list){ return (list||[]).reduce((s,x)=>s+(Number(x.amt)||0),0); }
+const openSub = {};
+const SUB_HINT = /지급수수료|광고선전비|외주비/;
+function subSum(it){ return (it.subs||[]).reduce((s,x)=>s+(Number(x.amt)||0),0); }
+function subsActive(it){ return (it.subs||[]).some(x=>x.amt!=null); }
+function syncSub(it){ if(subsActive(it)) it.amt=Math.round(subSum(it)); }
 function ohItemsActive(list){ return (list||[]).some(x=>x.amt!=null); }
 function applyOhItems(p, oid){
   const L=(p.costItems||{})[oid];
@@ -529,10 +544,23 @@ function ohItemRow(o, list, dis){
   const L=list||[]; const sum=ohItemSum(L);
   const line=(x,i)=>{
     const base=`oc|${o.id}|${i}`;
-    return `<tr><td><input type="text" class="cell name" id="ocn-${o.id}-${i}" data-k="${base}|name" value="${esc(x.name||"")}" ${dis?"disabled":""} aria-label="항목명" placeholder="항목명"></td>
-      <td><input type="text" inputmode="numeric" class="cell" id="oca-${o.id}-${i}" data-k="${base}|amt" value="${esc(fmtInput(x.amt))}" ${dis?"disabled":""} aria-label="${esc(x.name||"항목")} 금액" placeholder="0"></td>
+    const subs=x.subs||[]; const skey=`${o.id}|${i}`; const sOpen=!!openSub[skey]; const sOn=subsActive(x);
+    const showToggle = subs.length || SUB_HINT.test(x.name||"");
+    const tog = showToggle ? `<button class="sub-toggle" data-act="ocs-toggle" data-o="${o.id}" data-i="${i}" aria-expanded="${sOpen}">${sOpen?"▾":"▸"} 상세${subs.length?` ${subs.length}건`:""}</button>` : (dis?"":`<button class="sub-toggle muted" data-act="ocs-toggle" data-o="${o.id}" data-i="${i}">+ 상세</button>`);
+    let h=`<tr class="${sOpen?"sub-open":""}"><td><div class="oc-name"><input type="text" class="cell name" id="ocn-${o.id}-${i}" data-k="${base}|name" value="${esc(x.name||"")}" ${dis?"disabled":""} aria-label="항목명" placeholder="항목명">${tog}</div></td>
+      <td><input type="text" inputmode="numeric" class="cell" id="oca-${o.id}-${i}" data-k="${base}|amt" value="${esc(fmtInput(x.amt))}" ${dis||sOn?"disabled":""} aria-label="${esc(x.name||"항목")} 금액" placeholder="0" title="${sOn?"상세 내역 합계로 계산됩니다":""}"></td>
       <td><input type="text" class="cell name" id="ocm-${o.id}-${i}" data-k="${base}|memo" value="${esc(x.memo||"")}" ${dis?"disabled":""} aria-label="${esc(x.name||"항목")} 메모" placeholder="메모 (예: 9월 손익 기준)"></td>
       <td>${dis?"":`<button class="ghost small" data-act="oc-del" data-o="${o.id}" data-i="${i}" aria-label="항목 삭제">삭제</button>`}</td></tr>`;
+    if(sOpen){
+      subs.forEach((y,j)=>{ const sb=`ocs|${o.id}|${i}|${j}`;
+        h+=`<tr class="sub-line"><td><div class="sub-indent"><input type="text" class="cell name" id="ocsn-${o.id}-${i}-${j}" data-k="${sb}|name" value="${esc(y.name||"")}" ${dis?"disabled":""} aria-label="상세 항목명" placeholder="거래처·내용"></div></td>
+          <td><input type="text" inputmode="numeric" class="cell" id="ocsa-${o.id}-${i}-${j}" data-k="${sb}|amt" value="${esc(fmtInput(y.amt))}" ${dis?"disabled":""} aria-label="${esc(y.name||"상세")} 금액" placeholder="0"></td>
+          <td><input type="text" class="cell name" id="ocsm-${o.id}-${i}-${j}" data-k="${sb}|memo" value="${esc(y.memo||"")}" ${dis?"disabled":""} aria-label="${esc(y.name||"상세")} 메모" placeholder="메모"></td>
+          <td>${dis?"":`<button class="ghost small" data-act="ocs-del" data-o="${o.id}" data-i="${i}" data-j="${j}" aria-label="상세 삭제">삭제</button>`}</td></tr>`; });
+      h+=`<tr class="sub-line sub-foot"><td><div class="sub-indent">${dis?"":`<button class="ghost small" data-act="ocs-add" data-o="${o.id}" data-i="${i}">+ 상세 항목 추가</button>`}${subs.length?"":`<span class="small muted"> 거래처별 금액을 넣으면 합계가 「${esc(x.name||"항목")}」 금액이 됩니다</span>`}</div></td>
+        <td class="num small">${subs.length?`상세 합계 <b>${nf.format(Math.round(subSum(x)))}</b>`:""}</td><td></td><td></td></tr>`;
+    }
+    return h;
   };
   return `<tr class="plan-row"><td colspan="3"><div class="plan-wrap">
     <div class="plan-block">
@@ -1243,6 +1271,13 @@ document.addEventListener("input", e=>{
       return;
     }
     if(kind==="oc") return;
+    if(kind==="ocs" && draft){
+      const [, oid, idx, j, f3] = el.dataset.k.split("|");
+      const it=((p.costItems||{})[oid]||[])[+idx]; const y=it&&(it.subs||[])[+j]; if(!y) return;
+      if(f3==="name"||f3==="memo"){ y[f3]=el.value; queueSave(currentId); return; }
+      y.amt=v; syncSub(it); applyOhItems(p, oid); queueSave(currentId); render(); return;
+    }
+    if(kind==="ocs") return;
     if(kind==="pl" && draft){
       const [, tid, pk, idx, pf] = el.dataset.k.split("|");
       p.targets=p.targets||{}; const tg=p.targets[tid]=p.targets[tid]||{};
@@ -1327,6 +1362,14 @@ document.addEventListener("click", e=>{
     if(act==="plan-defaults"){ tg.plan={var:PLAN_DEFAULTS.var.map(n=>({name:n,rate:null})), fix:PLAN_DEFAULTS.fix.map(n=>({name:n,amt:null}))}; }
     if(act==="plan-clear"){ delete tg.plan; }
     queueSave(currentId); render(); return;
+  }
+  if(act==="ocs-toggle"){ const k=`${b.dataset.o}|${b.dataset.i}`; openSub[k]=!openSub[k]; render(); return; }
+  if((act==="ocs-add"||act==="ocs-del") && p && p.status!=="confirmed"){
+    const oid=b.dataset.o; const it=((p.costItems||{})[oid]||[])[+b.dataset.i]; if(!it) return;
+    it.subs=it.subs||[];
+    if(act==="ocs-add") it.subs.push({name:"",amt:null});
+    if(act==="ocs-del"){ it.subs.splice(+b.dataset.j,1); if(!it.subs.length) delete it.subs; }
+    if(it.subs) syncSub(it); applyOhItems(p, oid); queueSave(currentId); render(); return;
   }
   if(act.startsWith("oc-") && p && p.status!=="confirmed"){
     const oid=b.dataset.o; p.costItems=p.costItems||{}; const L=p.costItems[oid]=p.costItems[oid]||[];
